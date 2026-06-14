@@ -14,9 +14,17 @@ VKEncrypt — это userscript для браузера, который доба
 
 Реальная работа шифрования в чате ВКонтакте — текст превращается в шифр, на принимающей стороне расширение его расшифровывает с переключателем `[шифр]/[текст]`.
 
-<video src="docs/media/IMG_9299.MP4" controls width="100%"></video>
+### Часть 1: отправка зашифрованного сообщения (0:03–0:23)
 
-[Открыть/скачать оригинал](docs/media/IMG_9299.MP4)
+<img src="docs/media/IMG_9299_part1.webp" width="320" alt="Демо VKEncrypt — отправка шифра">
+
+[Скачать MP4 в полном качестве](docs/media/IMG_9299_part1.mp4)
+
+### Часть 2: расшифровка на принимающей стороне (0:31–0:41)
+
+<img src="docs/media/IMG_9299_part2.webp" width="320" alt="Демо VKEncrypt — расшифровка в чате">
+
+[Скачать MP4 в полном качестве](docs/media/IMG_9299_part2.mp4)
 
 ---
 
@@ -313,7 +321,11 @@ vkencrypt/
 │   ├── vkencrypt.service.template
 │   ├── deploy.sh                    # ставит systemd + автосборка userscript
 │   └── README.md
-├── docs/media/IMG_9299.MP4          # демо-видео
+├── docs/media/                      # демо-материалы
+│   ├── IMG_9299_part1.webp          # анимированное превью: отправка (0:03–0:23)
+│   ├── IMG_9299_part1.mp4           # то же в MP4
+│   ├── IMG_9299_part2.webp          # анимированное превью: расшифровка (0:31–0:41)
+│   └── IMG_9299_part2.mp4           # то же в MP4
 └── README.md                        # этот файл
 ```
 
