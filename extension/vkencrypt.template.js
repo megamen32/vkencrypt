@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         VK P2P AES-GCM (Key Input)
 // @namespace    local
-// @version      3.3
+// @version      3.4
 // @description  P2P шифрование + ввод ключа прямо в интерфейсе (без сохранения)
-// @author       You
+// @author       VKEncrypt
 // @match        https://vk.com/*
 // @match        https://m.vk.com/*
 // @grant        none
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.template.js
+// @downloadURL  https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.template.js
 // ==/UserScript==
 
 (function() {
