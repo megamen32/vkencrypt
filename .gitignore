@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+wheels/
+.venv/
+venv/
+
+# Секреты и сгенерированные файлы
+.env
+bot/.env
+bot/vkencrypt.service
+extension/dist/
+vkencrypt_userscript_*.js
+
+# ОС
+.DS_Store
+Thumbs.db
+
+# Редакторы
+.vscode/
+.idea/
+*.swp
+*.swo

@@ -1,0 +1,16 @@
+[Unit]
+Description=VKEncrypt echo-бот с AES-256-GCM шифрованием
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=__PROJECT_DIR__
+EnvironmentFile=__PROJECT_DIR__/.env
+ExecStart=__PROJECT_DIR__/.venv/bin/python __PROJECT_DIR__/main.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
