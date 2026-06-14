@@ -3,7 +3,7 @@
 # Если ../bot/.env существует и содержит PRE_SHARED_KEY_*, эти ключи
 # подставляются в STATIC_KEYS собранного файла.
 # Готовый файл пишется в dist/ (gitignored) — он содержит ключи, не коммитьте его.
-set -euo pipefail
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="$SCRIPT_DIR/vkencrypt.template.js"
@@ -30,6 +30,8 @@ if [[ -f "$ENV_FILE" ]]; then
         fi
     done < <(grep -E '^PRE_SHARED_KEY_[A-Za-z0-9]+=' "$ENV_FILE" | sed 's/[[:space:]]*$//')
 fi
+KEYS_LIST="${!KEY_MAP[*]:-}"
+KEYS_COUNT=${#KEY_MAP[@]}
 
 # Считываем текущий блок STATIC_KEYS из шаблона, чтобы аккуратно заменить только его.
 TMP=$(mktemp)
@@ -90,3 +92,13 @@ else
     echo "✅ Userscript собран (без env): $OUT_PATH"
     echo "   STATIC_KEYS взят из шаблона как есть — отредактируйте вручную при необходимости"
 fi
+
+# Дополнительно: обновляем стабильный vkencrypt.user.js, на который
+# ссылаются README и @updateURL/@downloadURL. Tampermonkey и Userscripts
+# распознают файл только если он называется *.user.js.
+STABLE_PATH="$SCRIPT_DIR/vkencrypt.user.js"
+cp -f "$OUT_PATH" "$STABLE_PATH"
+chmod 644 "$STABLE_PATH"
+echo "📌 Стабильный install-файл: $STABLE_PATH"
+echo "   Используй эту ссылку для установки и автообновления:"
+echo "   https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js"
