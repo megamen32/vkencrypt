@@ -2,7 +2,7 @@
 
 Шифрует сообщения в ВКонтакте. Установка — 5 секунд.
 
-<img src="docs/media/IMG_9299_part1.webp" width="280" alt="VKEncrypt в действии">&nbsp;&nbsp;<img src="docs/media/IMG_9299_part2.webp" width="280" alt="VKEncrypt расшифровка">
+<img src="docs/media/IMG_9299_part1.webp" width="280" alt="VKEncrypt (iPhone) в действии">&nbsp;&nbsp;<img src="docs/media/IMG_9299_part2.webp" width="280" alt="VKEncrypt (Android) расшифровка">
 
 ## Установка
 
