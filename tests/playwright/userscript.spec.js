@@ -145,6 +145,56 @@ test('init: скрипт рисует кнопки в web.vk.me composer без 
     expect(errors, errors.join('\n')).toEqual([]);
 });
 
+test('composer controls: вставляются на уровень inputPanel и перед dropdown отправки', async ({ page }) => {
+    await openMockChat(page, {
+        url: 'https://example.com',
+        body: `
+            <div class="ConvoComposer__inputPanel">
+                <div class="DropdownReforged ConvoComposer__clip DropdownReforged--closed">
+                    <div class="DropdownReforged__trigger">
+                        <button class="ConvoComposer__button" aria-label="Загрузить файл">+</button>
+                    </div>
+                </div>
+                <div role="presentation" class="ComposerInput ConvoComposer__inputWrapper">
+                    <div role="presentation">
+                        <span contenteditable="true"
+                              class="ComposerInput__input ConvoComposer__input ComposerInput__input--fixed"
+                              data-placeholder="Сообщение"
+                              inputmode="text"
+                              translate="no"
+                              role="textbox"
+                              aria-multiline="true"
+                              aria-label="Сообщение">1</span>
+                    </div>
+                </div>
+                <button class="ConvoComposer__button" aria-label="Выбрать эмодзи">☺</button>
+                <div class="DropdownReforged DropdownReforged--closed">
+                    <div class="DropdownReforged__trigger">
+                        <button class="ConvoComposer__button ConvoComposer__sendButton--submit" aria-label="Отправить сообщение">→</button>
+                    </div>
+                </div>
+            </div>
+        `,
+    });
+
+    const wrapperParent = await page.locator('#vk-p2p-enc-controls').evaluate(el => el.parentElement?.className || '');
+    expect(wrapperParent).toContain('ConvoComposer__inputPanel');
+
+    const order = await page.locator('.ConvoComposer__inputPanel').evaluate(panel => {
+        const children = Array.from(panel.children).map(el => ({
+            id: el.id || '',
+            className: el.className || '',
+            hasSendButton: !!el.querySelector?.('[aria-label*="Отправить"]'),
+        }));
+        return children;
+    });
+
+    const controlsIndex = order.findIndex(item => item.id === 'vk-p2p-enc-controls');
+    const sendIndex = order.findIndex(item => item.hasSendButton);
+    expect(controlsIndex).toBeGreaterThanOrEqual(0);
+    expect(sendIndex).toBeGreaterThan(controlsIndex);
+});
+
 test('emoji incoming: emj.-шифротекст расшифровывается без atob error', async ({ page }) => {
     const seed = 'очень длинная секретная фраза для emoji теста';
     const derived = deriveDerivedKeys(seed);

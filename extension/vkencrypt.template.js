@@ -727,7 +727,7 @@
                 display: inline-flex;
                 align-items: center;
                 gap: 2px;
-                margin-right: 4px;
+                margin-right: 2px;
                 vertical-align: middle;
             }
 
@@ -1877,12 +1877,15 @@
             showMainMenu(keyBtn);
         });
 
-        wrapper.appendChild(encBtn);
         wrapper.appendChild(keyBtn);
+        wrapper.appendChild(encBtn);
 
+        const sendContainer = sendBtn?.closest('.DropdownReforged');
         const insertReference = getComposerInsertReference(panel, inputEl);
 
-        if (sendBtn?.parentNode && panel.contains(sendBtn)) {
+        if (sendContainer?.parentNode && panel.contains(sendContainer)) {
+            sendContainer.parentNode.insertBefore(wrapper, sendContainer);
+        } else if (sendBtn?.parentNode && panel.contains(sendBtn)) {
             sendBtn.parentNode.insertBefore(wrapper, sendBtn);
         } else if (insertReference?.parentNode) {
             insertReference.parentNode.insertBefore(wrapper, insertReference.nextSibling);
