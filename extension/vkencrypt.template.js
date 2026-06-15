@@ -8,6 +8,8 @@
 // @match        https://m.vk.com/*
 // @match        https://vk.ru/*
 // @match        https://m.vk.ru/*
+// @match        https://web.vk.me/*
+// @match        https://m.web.vk.me/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
