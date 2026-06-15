@@ -1,0 +1,30 @@
+name: Live VK userscript test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  live-vk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RUN_LIVE: "1"
+      VK_LIVE_COOKIES: ${{ secrets.VK_LIVE_COOKIES }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run live VK test
+        run: npm run test:live

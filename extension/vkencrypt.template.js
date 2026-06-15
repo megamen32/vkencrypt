@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK P2P AES-GCM
 // @namespace    local
-// @version      4.1
+// @version      4.2
 // @description  P2P шифрование VK: seed-фраза, сохранение ключей, пользовательские ключи, автошифрование, emoji-шифротекст
 // @author       VKEncrypt
 // @match        https://vk.com/*
@@ -22,7 +22,7 @@
     'use strict';
 
     // ============================================================
-    // VK P2P AES-GCM v4.1
+    // VK P2P AES-GCM v4.2
     //
     // Что умеет:
     // - НЕ показывает модалку сразу после установки.
@@ -39,7 +39,7 @@
     // ============================================================
 
     const APP_NAME = 'VK P2P AES-GCM';
-    const APP_VERSION = '4.1';
+    const APP_VERSION = '4.2';
 
     const PREFIX = 'ENC[';
     const SUFFIX = ']';
@@ -91,6 +91,7 @@
 
     let isAutoSending = false;
     let lastEncryptedAt = 0;
+    let scanTimer = null;
 
     // ============================================================
     // Storage
@@ -1249,6 +1250,27 @@
         }
     }
 
+    function getIncomingMessageElements() {
+        const elements = new Set();
+
+        document.querySelectorAll(
+            '.ConvoMessage__text, .MessageText, .im_msg_text, .im-message--text'
+        ).forEach(el => elements.add(el));
+
+        document.querySelectorAll('[role="list"][aria-label*="Сообщения"]').forEach(list => {
+            list.querySelectorAll('article span, article div').forEach(el => {
+                if (el.children.length) return;
+
+                const text = el.textContent?.trim() || '';
+                if (text.startsWith(PREFIX) && text.endsWith(SUFFIX)) {
+                    elements.add(el);
+                }
+            });
+        });
+
+        return elements;
+    }
+
     // ============================================================
     // Composer helpers
     // ============================================================
@@ -1278,9 +1300,28 @@
     function getComposerPanel(inputEl) {
         if (!inputEl) return null;
 
-        return inputEl.closest(
+        const knownPanel = inputEl.closest(
             '.ConvoComposer__inputPanel, .ConvoComposer, .im-compose, .im-chat-input, form'
         );
+
+        if (knownPanel) return knownPanel;
+
+        let node = inputEl.parentElement;
+
+        while (node && node !== document.body) {
+            const rect = node.getBoundingClientRect();
+            const hasComposerButtons = Boolean(node.querySelector(
+                'button, [role="button"], [aria-label*="Загрузить файл"], [aria-label*="эмодзи"], [aria-label*="голосового"]'
+            ));
+
+            if (hasComposerButtons && rect.width > 80 && rect.height > 20) {
+                return node;
+            }
+
+            node = node.parentElement;
+        }
+
+        return inputEl.parentElement;
     }
 
     function findSendButton(panel) {
@@ -1313,6 +1354,18 @@
         }
 
         return null;
+    }
+
+    function getComposerInsertReference(panel, inputEl) {
+        if (!panel || !inputEl) return null;
+
+        let node = inputEl;
+
+        while (node.parentElement && node.parentElement !== panel) {
+            node = node.parentElement;
+        }
+
+        return node.parentElement === panel ? node : inputEl;
     }
 
     function getInputPlainText(inputEl) {
@@ -1590,8 +1643,12 @@
         wrapper.appendChild(encBtn);
         wrapper.appendChild(keyBtn);
 
-        if (sendBtn?.parentNode) {
+        const insertReference = getComposerInsertReference(panel, inputEl);
+
+        if (sendBtn?.parentNode && panel.contains(sendBtn)) {
             sendBtn.parentNode.insertBefore(wrapper, sendBtn);
+        } else if (insertReference?.parentNode) {
+            insertReference.parentNode.insertBefore(wrapper, insertReference.nextSibling);
         } else {
             panel.appendChild(wrapper);
         }
@@ -1777,11 +1834,18 @@
     function scan() {
         injectStyles();
 
-        document.querySelectorAll(
-            '.ConvoMessage__text, .MessageText, .im_msg_text, .im-message--text'
-        ).forEach(el => processIncomingMessage(el));
+        getIncomingMessageElements().forEach(el => processIncomingMessage(el));
 
         addEncryptButton();
+    }
+
+    function scheduleScan(delay = 250) {
+        if (scanTimer !== null) return;
+
+        scanTimer = setTimeout(() => {
+            scanTimer = null;
+            scan();
+        }, delay);
     }
 
     function init() {
@@ -1801,10 +1865,10 @@
         console.log('🔑 Custom keys:', Object.keys(CUSTOM_KEYS).join(', ') || 'none');
         console.log('⚡ Temp key:', TEMP_KEY ? 'yes' : 'no');
 
-        setTimeout(scan, 700);
+        scheduleScan(700);
 
         const observer = new MutationObserver(() => {
-            scan();
+            scheduleScan();
         });
 
         observer.observe(document.body, {

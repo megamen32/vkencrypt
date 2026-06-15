@@ -11,6 +11,7 @@ venv/
 
 # Секреты и сгенерированные файлы
 .env
+.secrets
 bot/.env
 bot/vkencrypt.service
 bot/keys.json

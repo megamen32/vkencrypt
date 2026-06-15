@@ -64,11 +64,38 @@ const MOCK_BODY = `
     </div>
 `;
 
+const MODERN_WEB_VK_CSS = `
+    .vk-modern-composer { display:flex; gap:8px; padding:12px; align-items:center; width:720px; }
+    .vk-modern-input-wrap { flex:1; min-width:0; border:1px solid #ccc; padding:8px; }
+    .vk-modern-input { display:block; min-width:200px; min-height:30px; }
+    .vk-modern-button { width:32px; height:32px; }
+`;
+
+const MODERN_WEB_VK_BODY = `
+    <div role="list" aria-label="Сообщения">
+        <article>
+            <span>ENC[k1:invalid]</span>
+        </article>
+    </div>
+    <div class="vk-modern-composer">
+        <button class="vk-modern-button" aria-label="Загрузить файл">+</button>
+        <div class="vk-modern-input-wrap">
+            <div contenteditable="true"
+                 class="vk-modern-input"
+                 role="textbox"
+                 aria-label="Сообщение"
+                 aria-multiline="true"></div>
+        </div>
+        <button class="vk-modern-button" aria-label="Выбрать эмодзи или стикер">☺</button>
+        <button class="vk-modern-button" aria-label="Начать запись голосового сообщения">🎙</button>
+    </div>
+`;
+
 // Идемпотентно: открывает about:blank, добавляет мок-композер, ставит
 // стабы GM_*, форсит sync setTimeout, инжектит userscript через
 // page.evaluate (после полной загрузки страницы, когда document.body
 // уже существует и MutationObserver привязывается корректно).
-async function openMockChat(page) {
+async function openMockChat(page, { body = MOCK_BODY, css = MOCK_CSS } = {}) {
     await page.goto('about:blank');
     await page.evaluate(
         ({ body, css, gmStubs, syncStub, code }) => {
@@ -89,14 +116,21 @@ async function openMockChat(page) {
             (new Function(code))();
         },
         {
-            body: MOCK_BODY,
-            css: MOCK_CSS,
+            body,
+            css,
             gmStubs: GM_STUBS,
             syncStub: SYNC_STUB,
             code: loadUserscriptCode(),
         }
     );
     await page.waitForSelector('#vk-p2p-enc-btn', { timeout: 5000 });
+}
+
+async function openModernWebVkChat(page) {
+    await openMockChat(page, {
+        body: MODERN_WEB_VK_BODY,
+        css: MODERN_WEB_VK_CSS,
+    });
 }
 
 async function setupUserscript(page) {
@@ -128,6 +162,7 @@ module.exports = {
     loadUserscriptCode,
     GM_STUBS,
     openMockChat,
+    openModernWebVkChat,
     setupUserscript,
     makePlaintextHelper,
 };
