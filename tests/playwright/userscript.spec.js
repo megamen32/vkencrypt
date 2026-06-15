@@ -35,6 +35,11 @@ const CYRILLIC_ALPHABET = [
 const FORMAT_START = '𓁗';
 const FORMAT_MID = 'Ⰴ';
 const FORMAT_PAYLOAD = 'Ⱑ';
+const CODEC_MARKERS = {
+    base64: '𐌁',
+    emoji: '𐌄',
+    cyrillic: '𐌓',
+};
 
 function deriveDerivedKeys(seed) {
     const derived = crypto.pbkdf2Sync(seed, KDF_SALT, KDF_ITERATIONS, 128, 'sha256');
@@ -97,6 +102,16 @@ async function getComposerText(page) {
     return page.locator('[contenteditable="true"]').first().evaluate(el => el.innerText.trim());
 }
 
+function renderEmojiAsImages(payload) {
+    return Array.from(payload).map(ch => {
+        if (ch === '🟰') {
+            return '🟰';
+        }
+
+        return `<img src=\"data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==\" alt=\"${ch}\" class=\"Emoji\">`;
+    }).join('');
+}
+
 test('init: скрипт грузится, рисует кнопки в старом поле ввода', async ({ page }) => {
     await openMockChat(page);
 
@@ -148,7 +163,7 @@ test('emoji incoming: emj.-шифротекст расшифровывается
             vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
         },
         body: `
-            <div class="ConvoMessage__text">𓁗1ⰄeⰡ${cipherText}</div>
+            <div class="ConvoMessage__text">𓁗1Ⰴ𐌄Ⱑ${cipherText}</div>
             <div class="ConvoComposer__inputPanel">
                 <div class="ComposerInput">
                     <span contenteditable="true"
@@ -164,6 +179,43 @@ test('emoji incoming: emj.-шифротекст расшифровывается
     });
 
     await expect(page.locator('.vk-dec-content')).toHaveText('Привет, emoji!');
+    expect(errors, errors.join('\n')).toEqual([]);
+});
+
+test('emoji incoming: VK emoji images в сообщении корректно собираются из alt и расшифровываются', async ({ page }) => {
+    const seed = 'очень длинная секретная фраза для emoji img теста';
+    const derived = deriveDerivedKeys(seed);
+    const cipherText = encryptForEmoji('Привет, emoji img!', derived.k1);
+
+    const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    page.on('console', msg => {
+        if (msg.type() === 'error') errors.push('console.error: ' + msg.text());
+    });
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
+        },
+        body: `
+            <div class="ConvoMessage__text">𓁗1Ⰴ𐌄Ⱑ${renderEmojiAsImages(cipherText)}</div>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">
+                    <i class="ConvoComposer__buttonIcon ConvoComposer__buttonIcon--submit">→</i>
+                </button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-dec-content')).toHaveText('Привет, emoji img!');
     expect(errors, errors.join('\n')).toEqual([]);
 });
 
@@ -183,7 +235,7 @@ test('encrypt button: по умолчанию шифрует в короткий
 
     await expect.poll(async () => {
         return getComposerText(page);
-    }).toMatch(/^𓁗1ⰄeⰡ/u);
+    }).toMatch(/^𓁗1Ⰴ𐌄Ⱑ/u);
 });
 
 test('menu settings: dropdown переключает кодировку на русский алфавит', async ({ page }) => {
@@ -205,12 +257,12 @@ test('menu settings: dropdown переключает кодировку на р�
     await setComposerText(page, 'Русский алфавит');
     await page.locator('#vk-p2p-enc-btn').click();
 
-    await expect.poll(async () => getComposerText(page)).toMatch(/^𓁗1ⰄrⰡ/u);
+    await expect.poll(async () => getComposerText(page)).toMatch(/^𓁗1Ⰴ𐌓Ⱑ/u);
     const encrypted = await getComposerText(page);
 
-    expect(encrypted).toMatch(/^𓁗1ⰄrⰡ/u);
+    expect(encrypted).toMatch(/^𓁗1Ⰴ𐌓Ⱑ/u);
 
-    const payload = encrypted.slice('𓁗1ⰄrⰡ'.length);
+    const payload = encrypted.slice('𓁗1Ⰴ𐌓Ⱑ'.length);
     for (const ch of Array.from(payload)) {
         expect(CYRILLIC_ALPHABET.includes(ch)).toBe(true);
     }
@@ -228,7 +280,7 @@ test('auto decrypt off: шифротекст остаётся как есть д
             vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoDecrypt: false })),
         },
         body: `
-            <div class="ConvoMessage__text">𓁗1ⰄeⰡ${cipherText}</div>
+            <div class="ConvoMessage__text">𓁗1Ⰴ𐌄Ⱑ${cipherText}</div>
             <div class="ConvoComposer__inputPanel">
                 <div class="ComposerInput">
                     <span contenteditable="true"
@@ -242,7 +294,7 @@ test('auto decrypt off: шифротекст остаётся как есть д
     });
 
     await expect(page.locator('.vk-dec-content')).toHaveCount(0);
-    await expect(page.locator('.ConvoMessage__text')).toContainText('𓁗1ⰄeⰡ');
+    await expect(page.locator('.ConvoMessage__text')).toContainText('𓁗1Ⰴ𐌄Ⱑ');
 });
 
 test('invalid new payload: похожий префикс не должен вызывать ошибку расшифровки', async ({ page }) => {
@@ -266,7 +318,7 @@ test('invalid new payload: похожий префикс не должен вы�
             vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
         },
         body: `
-            <div class="ConvoMessage__text">𓁗asdⰄeⰡnot-really-encrypted</div>
+            <div class="ConvoMessage__text">𓁗asdⰄ𐌄Ⱑnot-really-encrypted</div>
             <div class="ConvoComposer__inputPanel">
                 <div class="ComposerInput">
                     <span contenteditable="true"
@@ -280,7 +332,7 @@ test('invalid new payload: похожий префикс не должен вы�
     });
 
     await expect(page.locator('.vk-dec-content')).toHaveCount(0);
-    await expect(page.locator('.ConvoMessage__text')).toContainText('𓁗asdⰄeⰡnot-really-encrypted');
+    await expect(page.locator('.ConvoMessage__text')).toContainText('𓁗asdⰄ𐌄Ⱑnot-really-encrypted');
     expect(errors, errors.join('\n')).toEqual([]);
 });
 
@@ -299,7 +351,7 @@ test('invalid new base64 payload: битый envelope не должен вызы
             vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
         },
         body: `
-            <div class="ConvoMessage__text">𓁗1ⰄbⰡnot-base64!!!!</div>
+            <div class="ConvoMessage__text">𓁗1Ⰴ𐌁Ⱑnot-base64!!!!</div>
             <div class="ConvoComposer__inputPanel">
                 <div class="ComposerInput">
                     <span contenteditable="true"
@@ -313,8 +365,37 @@ test('invalid new base64 payload: битый envelope не должен вызы
     });
 
     await expect(page.locator('.vk-dec-content')).toHaveCount(0);
-    await expect(page.locator('.ConvoMessage__text')).toContainText('𓁗1ⰄbⰡnot-base64!!!!');
+    await expect(page.locator('.ConvoMessage__text')).toContainText('𓁗1Ⰴ𐌁Ⱑnot-base64!!!!');
     expect(errors, errors.join('\n')).toEqual([]);
+});
+
+test('decrypt error UI: исходный шифр остаётся, ошибка показывается отдельной строкой', async ({ page }) => {
+    const validKey = deriveDerivedKeys('seed для шифрования').k1;
+    const wrongSeed = deriveDerivedKeys('seed для красивой ошибки');
+    const wrongCipher = encryptForEmoji('ошибка дешифровки', validKey);
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(wrongSeed),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
+        },
+        body: `
+            <div class="ConvoMessage__text">𓁗1Ⰴ𐌄Ⱑ${wrongCipher}</div>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-dec-content')).toContainText('𓁗1Ⰴ𐌄Ⱑ');
+    await expect(page.locator('.vk-dec-error')).toContainText('ошибка:');
 });
 
 test('toggle cipher: клик по [шифр] не пере-расшифровывает сообщение обратно', async ({ page }) => {
@@ -329,7 +410,7 @@ test('toggle cipher: клик по [шифр] не пере-расшифровы
             vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
         },
         body: `
-            <div class="ConvoMessage__text">𓁗1ⰄeⰡ${cipherText}</div>
+            <div class="ConvoMessage__text">𓁗1Ⰴ𐌄Ⱑ${cipherText}</div>
             <div class="ConvoComposer__inputPanel">
                 <div class="ComposerInput">
                     <span contenteditable="true"
@@ -344,7 +425,7 @@ test('toggle cipher: клик по [шифр] не пере-расшифровы
 
     await page.locator('.vk-dec-toggle').click();
     await page.waitForTimeout(50);
-    await expect(page.locator('.vk-dec-content')).toContainText('𓁗1ⰄeⰡ');
+    await expect(page.locator('.vk-dec-content')).toContainText('𓁗1Ⰴ𐌄Ⱑ');
     await expect(page.locator('.vk-dec-toggle')).toHaveText('[текст]');
 });
 

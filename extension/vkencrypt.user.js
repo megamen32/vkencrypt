@@ -44,6 +44,11 @@
     const FORMAT_START = '𓁗';
     const FORMAT_MID = 'Ⰴ';
     const FORMAT_PAYLOAD = 'Ⱑ';
+    const CODEC_MARKERS = {
+        base64: '𐌁',
+        emoji: '𐌄',
+        cyrillic: '𐌓'
+    };
 
     const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
@@ -73,9 +78,9 @@
     ];
 
     const CIPHER_CODECS = {
-        base64: { shortCode: 'b', label: 'Base64' },
-        emoji: { shortCode: 'e', label: 'Emoji' },
-        cyrillic: { shortCode: 'r', label: 'Русский алфавит' }
+        base64: { shortCode: CODEC_MARKERS.base64, label: 'Base64' },
+        emoji: { shortCode: CODEC_MARKERS.emoji, label: 'Emoji' },
+        cyrillic: { shortCode: CODEC_MARKERS.cyrillic, label: 'Русский алфавит' }
     };
 
     const IV_LEN = 12;
@@ -396,15 +401,15 @@
 
     function parseEncryptedMessage(text) {
         const trimmed = (text || '').trim();
-        const compactMatch = new RegExp(`^${FORMAT_START}(.+?)${FORMAT_MID}([ber])${FORMAT_PAYLOAD}(.+)$`, 'su').exec(trimmed);
+        const compactMatch = new RegExp(`^${FORMAT_START}(.+?)${FORMAT_MID}([${CODEC_MARKERS.base64}${CODEC_MARKERS.emoji}${CODEC_MARKERS.cyrillic}])${FORMAT_PAYLOAD}(.+)$`, 'su').exec(trimmed);
         if (!compactMatch) return null;
 
         const parsed = {
             originalText: trimmed,
             keyId: fromCompactKeyId(compactMatch[1]),
-            codecId: compactMatch[2] === 'e'
+            codecId: compactMatch[2] === CODEC_MARKERS.emoji
                 ? 'emoji'
-                : compactMatch[2] === 'r'
+                : compactMatch[2] === CODEC_MARKERS.cyrillic
                     ? 'cyrillic'
                     : 'base64',
             encodedPayload: compactMatch[3]
@@ -866,6 +871,14 @@
 
             .vk-dec-toggle:hover {
                 opacity: 1;
+            }
+
+            .vk-dec-error {
+                display: block;
+                margin-top: 6px;
+                font-size: 12px;
+                line-height: 1.35;
+                color: rgba(255, 255, 255, 0.72);
             }
         `;
 
@@ -1377,12 +1390,62 @@
         parentEl.dataset.vkdecDone = 'true';
     }
 
+    function createErrorInterface(originalEnc, errorText, parentEl) {
+        parentEl.innerHTML = '';
+
+        const rawSpan = document.createElement('span');
+        rawSpan.className = 'vk-dec-content';
+        rawSpan.dataset.vkdecSkip = 'true';
+        rawSpan.textContent = originalEnc;
+
+        const errorLine = document.createElement('span');
+        errorLine.className = 'vk-dec-error';
+        errorLine.dataset.vkdecSkip = 'true';
+        errorLine.textContent = `ошибка: ${errorText}`;
+
+        parentEl.appendChild(rawSpan);
+        parentEl.appendChild(errorLine);
+        parentEl.dataset.vkdecDone = 'true';
+    }
+
+    function extractNodeText(node) {
+        if (!node) return '';
+
+        if (node.nodeType === Node.TEXT_NODE) {
+            return node.textContent || '';
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE) {
+            return '';
+        }
+
+        const el = /** @type {HTMLElement} */ (node);
+
+        if (el.dataset?.vkdecSkip === 'true') {
+            return '';
+        }
+
+        if (el.tagName === 'IMG') {
+            return el.getAttribute('alt') || '';
+        }
+
+        let out = '';
+        el.childNodes.forEach(child => {
+            out += extractNodeText(child);
+        });
+        return out;
+    }
+
+    function extractMessageText(msgEl) {
+        return extractNodeText(msgEl).trim();
+    }
+
     async function processIncomingMessage(msgEl) {
         if (!settings.autoDecrypt) return;
         if (!hasAnyKeys()) return;
         if (msgEl.dataset.vkdecDone) return;
 
-        const text = msgEl.textContent?.trim() || '';
+        const text = extractMessageText(msgEl);
         const parsed = parseEncryptedMessage(text);
         if (!parsed) return;
 
@@ -1399,8 +1462,7 @@
             createToggleInterface(parsed.originalText, decrypted, msgEl);
         } catch (err) {
             console.error('❌ Ошибка расшифровки:', err);
-            msgEl.textContent = `[❌ Ошибка расшифровки: ${err.message}]`;
-            msgEl.dataset.vkdecDone = 'true';
+            createErrorInterface(parsed.originalText, err.message, msgEl);
         }
     }
 
@@ -1420,7 +1482,7 @@
                 if (el.closest('[data-vkdec-done="true"]')) return;
                 if (el.children.length) return;
 
-                const text = el.textContent?.trim() || '';
+                const text = extractMessageText(el);
                 if (parseEncryptedMessage(text)) {
                     elements.add(el);
                 }

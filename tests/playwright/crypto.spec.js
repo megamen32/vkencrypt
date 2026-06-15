@@ -33,6 +33,11 @@ const CYRILLIC_ALPHABET = [
 const FORMAT_START = '𓁗';
 const FORMAT_MID = 'Ⰴ';
 const FORMAT_PAYLOAD = 'Ⱑ';
+const CODEC_MARKERS = {
+    base64: '𐌁',
+    emoji: '𐌄',
+    cyrillic: '𐌓',
+};
 
 function deriveKeyMaterialFromSeed(seed) {
     const derived = crypto.pbkdf2Sync(seed, KDF_SALT, KDF_ITERATIONS, 128, 'sha256');
@@ -209,17 +214,17 @@ test.describe('русский алфавит-кодирование', () => {
     });
 });
 
-test.describe('новый формат 𓁗1ⰄeⰡ', () => {
+test.describe('новый формат 𓁗1Ⰴ𐌄Ⱑ', () => {
     test('собирается и парсится', () => {
         const k = deriveKeyMaterialFromSeed('короткий формат').k1;
         const b64 = aesGcmEncrypt('hello', k);
         const encoded = encodeBase64ToEmoji(b64);
-        const msg = `${FORMAT_START}1${FORMAT_MID}e${FORMAT_PAYLOAD}${encoded}`;
+        const msg = `${FORMAT_START}1${FORMAT_MID}${CODEC_MARKERS.emoji}${FORMAT_PAYLOAD}${encoded}`;
 
-        const match = new RegExp(`^${FORMAT_START}(.+?)${FORMAT_MID}([ber])${FORMAT_PAYLOAD}(.+)$`, 'u').exec(msg);
+        const match = new RegExp(`^${FORMAT_START}(.+?)${FORMAT_MID}([${CODEC_MARKERS.base64}${CODEC_MARKERS.emoji}${CODEC_MARKERS.cyrillic}])${FORMAT_PAYLOAD}(.+)$`, 'u').exec(msg);
         expect(match).not.toBeNull();
         expect(match[1]).toBe('1');
-        expect(match[2]).toBe('e');
+        expect(match[2]).toBe(CODEC_MARKERS.emoji);
         expect(aesGcmDecrypt(decodeEmojiToBase64(match[3]), k)).toBe('hello');
     });
 });

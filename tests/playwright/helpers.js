@@ -88,7 +88,7 @@ const MODERN_WEB_VK_CSS = `
 const MODERN_WEB_VK_BODY = `
     <div role="list" aria-label="Сообщения">
         <article>
-            <span>𓁗1ⰄbⰡinvalid</span>
+            <span>𓁗1Ⰴ𐌁Ⱑinvalid</span>
         </article>
     </div>
     <div class="vk-modern-composer">
