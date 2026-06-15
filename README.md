@@ -6,18 +6,27 @@
 
 ## Установка
 
-### iPhone (Safari)
+### Компьютер — Tampermonkey
 
-1. Поставь [Userscripts](https://apps.apple.com/app/userscripts/id1463296397) из App Store.
-2. Нажми **[сюда](https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js)** — откроется в Safari.
-3. Нажми кнопку «Поделиться» (квадрат со стрелкой) → **Userscripts** → **Import**.
-4. Зайди в `vk.com` и открой любой чат.
+1. Установите расширение [Tampermonkey](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) в свой браузер (Chrome / Firefox / Edge / Brave).
+2. Нажмите **[Установить VKEncrypt](https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js)** — Tampermonkey сам откроет окно установки. Жмите «Установить».
+3. Откройте `vk.com` или `vk.ru` и зайдите в любой чат.
 
-### Компьютер или Android
+### iPhone — Safari
 
-1. Поставь [Tampermonkey](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) в свой браузер (Chrome / Firefox / Edge / Brave / Kiwi на Android).
-2. Нажми **[Установить VKEncrypt](https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js)** — Tampermonkey сам откроет окно установки. Жми «Установить».
-3. Зайди в `vk.com` и открой любой чат.
+1. Установите бесплатное приложение [Userscripts](https://apps.apple.com/app/userscripts/id1463296397) из App Store.
+2. Откройте **Настройки iOS → Safari → Расширения → Userscripts** и включите расширение. Дайте доступ к `vk.com` и `vk.ru`.
+3. Нажмите **[Установить VKEncrypt](https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js)**. Приложение Userscripts на iPhone перехватит файл `.user.js` и предложит импортировать/установить скрипт автоматически. Если перехват не сработал — откройте меню «Поделиться» (квадрат со стрелкой) → **Userscripts** → **Import**.
+4. Откройте `vk.com` или `vk.ru` в Safari и зайдите в любой чат.
+
+### Android — Kiwi Browser
+
+Kiwi — единственный мобильный браузер, который поддерживает полноценные Chrome-расширения.
+
+1. Установите [Kiwi Browser](https://play.google.com/store/apps/details?id=com.kiwibrowser.browser) из Google Play.
+2. Внутри Kiwi откройте Chrome Web Store и установите **Tampermonkey**.
+3. Нажмите **[Установить VKEncrypt](https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js)** — Tampermonkey предложит установку.
+4. Откройте `vk.com` или `vk.ru` и зайдите в любой чат.
 
 ## Как пользоваться
 
