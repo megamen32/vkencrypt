@@ -408,20 +408,28 @@
             const rawPayload = inner.slice(colon + 1);
 
             if (rawPayload.startsWith(EMOJI_PAYLOAD_MARKER)) {
-                return {
+                const parsed = {
                     originalText: trimmed,
                     keyId,
                     codecId: 'emoji',
                     encodedPayload: rawPayload.slice(EMOJI_PAYLOAD_MARKER.length)
                 };
+
+                return isPlausibleEncodedPayload(parsed.encodedPayload, parsed.codecId)
+                    ? parsed
+                    : null;
             }
 
-            return {
+            const parsed = {
                 originalText: trimmed,
                 keyId,
                 codecId: 'base64',
                 encodedPayload: rawPayload
             };
+
+            return isPlausibleEncodedPayload(parsed.encodedPayload, parsed.codecId)
+                ? parsed
+                : null;
         }
 
         const compactMatch = /^Y([^:]+):([ber])\.(.+)$/s.exec(trimmed);

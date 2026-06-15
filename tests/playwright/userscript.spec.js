@@ -284,6 +284,39 @@ test('invalid compact payload: похожий префикс не должен �
     expect(errors, errors.join('\n')).toEqual([]);
 });
 
+test('invalid legacy payload: битый ENC не должен вызывать atob error', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для битого legacy');
+    const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    page.on('console', msg => {
+        if (msg.type() === 'error') errors.push('console.error: ' + msg.text());
+    });
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
+        },
+        body: `
+            <div class="ConvoMessage__text">ENC[k1:not-base64!!!!]</div>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-dec-content')).toHaveCount(0);
+    await expect(page.locator('.ConvoMessage__text')).toContainText('ENC[k1:not-base64!!!!]');
+    expect(errors, errors.join('\n')).toEqual([]);
+});
+
 test('toggle cipher: клик по [шифр] не пере-расшифровывает сообщение обратно', async ({ page }) => {
     const seed = 'seed для toggle';
     const derived = deriveDerivedKeys(seed);
