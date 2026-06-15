@@ -23,6 +23,17 @@ const EMOJI_ALPHABET = [
 ];
 const EMOJI_PAD = '🟰';
 const EMOJI_MARKER = 'emj.';
+const CYRILLIC_ALPHABET = [
+    'А','Б','В','Г','Д','Е','Ж','З',
+    'И','Й','К','Л','М','Н','О','П',
+    'Р','С','Т','У','Ф','Х','Ц','Ч',
+    'Ш','Щ','Ъ','Ы','Ь','Э','Ю','Я',
+    'а','б','в','г','д','е','ж','з',
+    'и','й','к','л','м','н','о','п',
+    'р','с','т','у','ф','х','ц','ч',
+    'ш','щ','ъ','ы','ь','э','ю','я',
+];
+const CYRILLIC_MARKER = 'rus.';
 
 function deriveDerivedKeys(seed) {
     const derived = crypto.pbkdf2Sync(seed, KDF_SALT, KDF_ITERATIONS, 128, 'sha256');
@@ -55,6 +66,34 @@ function encryptForEmoji(plainText, keyHex) {
     }
 
     return EMOJI_MARKER + out;
+}
+
+function makeBaseSettings(extra = {}) {
+    return {
+        autoEncrypt: false,
+        saveDerivedKeys: true,
+        autoDecrypt: true,
+        emojiCipher: true,
+        cipherCodec: 'emoji',
+        ...extra,
+    };
+}
+
+async function setComposerText(page, text) {
+    await page.locator('[contenteditable="true"]').first().evaluate((el, value) => {
+        el.focus();
+        el.innerText = value;
+        el.dispatchEvent(new InputEvent('input', {
+            bubbles: true,
+            inputType: 'insertText',
+            data: value,
+        }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+    }, text);
+}
+
+async function getComposerText(page) {
+    return page.locator('[contenteditable="true"]').first().evaluate(el => el.innerText.trim());
 }
 
 test('init: скрипт грузится, рисует кнопки в старом поле ввода', async ({ page }) => {
@@ -105,12 +144,7 @@ test('emoji incoming: emj.-шифротекст расшифровывается
         url: 'https://example.com',
         gmSeed: {
             vk_p2p_derived_keys_v1: JSON.stringify(derived),
-            vk_p2p_settings_v1: JSON.stringify({
-                autoEncrypt: false,
-                saveDerivedKeys: true,
-                decryptIncoming: true,
-                emojiCipher: true,
-            }),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
         },
         body: `
             <div class="ConvoMessage__text">ENC[k1:${cipherText}]</div>
@@ -130,4 +164,175 @@ test('emoji incoming: emj.-шифротекст расшифровывается
 
     await expect(page.locator('.vk-dec-content')).toHaveText('Привет, emoji!');
     expect(errors, errors.join('\n')).toEqual([]);
+});
+
+test('encrypt button: по умолчанию шифрует в короткий emoji-формат', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для короткого формата');
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
+        },
+    });
+
+    await setComposerText(page, 'Привет короткий формат');
+    await page.locator('#vk-p2p-enc-btn').click();
+
+    await expect.poll(async () => {
+        return getComposerText(page);
+    }).toMatch(/^Y1:e\./);
+});
+
+test('menu settings: dropdown переключает кодировку на русский алфавит', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для русского алфавита');
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
+        },
+    });
+
+    await page.locator('#vk-p2p-key-btn').click();
+    await expect(page.locator('#vk-p2p-cipher-codec-select')).toBeVisible();
+    await page.locator('#vk-p2p-cipher-codec-select').selectOption('cyrillic');
+    await page.keyboard.press('Escape');
+
+    await setComposerText(page, 'Русский алфавит');
+    await page.locator('#vk-p2p-enc-btn').click();
+
+    await expect.poll(async () => getComposerText(page)).toMatch(/^Y1:r\./);
+    const encrypted = await getComposerText(page);
+
+    expect(encrypted).toMatch(/^Y1:r\./);
+
+    const payload = encrypted.slice('Y1:r.'.length);
+    for (const ch of Array.from(payload)) {
+        if (ch === '=') continue;
+        expect(CYRILLIC_ALPHABET.includes(ch)).toBe(true);
+    }
+});
+
+test('auto decrypt off: шифротекст остаётся как есть для всех сообщений', async ({ page }) => {
+    const seed = 'seed для отключенной авторасшифровки';
+    const derived = deriveDerivedKeys(seed);
+    const cipherText = encryptForEmoji('Не трогай меня', derived.k1);
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoDecrypt: false })),
+        },
+        body: `
+            <div class="ConvoMessage__text">Y1:e.${cipherText.slice(EMOJI_MARKER.length)}</div>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-dec-content')).toHaveCount(0);
+    await expect(page.locator('.ConvoMessage__text')).toContainText('Y1:e.');
+});
+
+test('toggle cipher: клик по [шифр] не пере-расшифровывает сообщение обратно', async ({ page }) => {
+    const seed = 'seed для toggle';
+    const derived = deriveDerivedKeys(seed);
+    const cipherText = encryptForEmoji('Стабильный toggle', derived.k1);
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
+        },
+        body: `
+            <div class="ConvoMessage__text">Y1:e.${cipherText.slice(EMOJI_MARKER.length)}</div>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await page.locator('.vk-dec-toggle').click();
+    await page.waitForTimeout(50);
+    await expect(page.locator('.vk-dec-content')).toContainText('Y1:e.');
+    await expect(page.locator('.vk-dec-toggle')).toHaveText('[текст]');
+});
+
+test('custom key modal: имя слота принимает кириллицу', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для модалки с кириллицей');
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
+        },
+    });
+
+    await page.locator('#vk-p2p-key-btn').click();
+    await page.getByRole('button', { name: /Добавить пользовательский ключ/i }).click();
+
+    await page.locator('#vk-p2p-custom-name').fill('рыба');
+    await page.locator('#vk-p2p-custom-key').fill('секретное слово');
+    await page.locator('#vk-p2p-custom-save').click();
+
+    await expect(page.locator('.vk-p2p-overlay')).toHaveCount(0);
+    await page.locator('#vk-p2p-key-btn').click();
+    await expect(page.getByRole('button', { name: /^🔑 рыба \(секретное слово\)$/ })).toBeVisible();
+});
+
+test('mobile menu: окно настроек остаётся в пределах viewport и скроллится', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для мобильного меню');
+    const customKeys = {};
+    for (let i = 0; i < 10; i += 1) {
+        customKeys[`slot${i}`] = {
+            key: deriveDerivedKeys(`custom-${i}`).k1,
+            label: `label-${i}`,
+        };
+    }
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openMockChat(page, {
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_custom_keys_v1: JSON.stringify(customKeys),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
+        },
+    });
+
+    await page.locator('#vk-p2p-key-btn').click();
+    const styles = await page.locator('.vk-p2p-menu').evaluate(el => {
+        const css = getComputedStyle(el);
+        return {
+            left: parseFloat(css.left),
+            top: parseFloat(css.top),
+            width: parseFloat(css.width),
+            maxHeight: parseFloat(css.maxHeight),
+            overflowY: css.overflowY,
+        };
+    });
+
+    expect(styles.left).toBeGreaterThanOrEqual(0);
+    expect(styles.top).toBeGreaterThanOrEqual(0);
+    expect(styles.width).toBeLessThanOrEqual(390);
+    expect(styles.maxHeight).toBeLessThanOrEqual(844);
+    expect(['auto', 'scroll']).toContain(styles.overflowY);
 });

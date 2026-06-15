@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK P2P AES-GCM
 // @namespace    local
-// @version      4.2
+// @version      4.3
 // @description  P2P шифрование VK: seed-фраза, сохранение ключей, пользовательские ключи, автошифрование, emoji-шифротекст
 // @author       VKEncrypt
 // @match        https://vk.com/*
@@ -22,7 +22,7 @@
     'use strict';
 
     // ============================================================
-    // VK P2P AES-GCM v4.2
+    // VK P2P AES-GCM v4.3
     //
     // Что умеет:
     // - НЕ показывает модалку сразу после установки.
@@ -39,10 +39,11 @@
     // ============================================================
 
     const APP_NAME = 'VK P2P AES-GCM';
-    const APP_VERSION = '4.2';
+    const APP_VERSION = '4.3';
 
-    const PREFIX = 'ENC[';
-    const SUFFIX = ']';
+    const LEGACY_PREFIX = 'ENC[';
+    const LEGACY_SUFFIX = ']';
+    const COMPACT_PREFIX = 'Y';
 
     const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
@@ -61,6 +62,22 @@
 
     const EMOJI_PAD = '🟰';
     const EMOJI_PAYLOAD_MARKER = 'emj.';
+    const CYRILLIC_ALPHABET = [
+        'А','Б','В','Г','Д','Е','Ж','З',
+        'И','Й','К','Л','М','Н','О','П',
+        'Р','С','Т','У','Ф','Х','Ц','Ч',
+        'Ш','Щ','Ъ','Ы','Ь','Э','Ю','Я',
+        'а','б','в','г','д','е','ж','з',
+        'и','й','к','л','м','н','о','п',
+        'р','с','т','у','ф','х','ц','ч',
+        'ш','щ','ъ','ы','ь','э','ю','я'
+    ];
+
+    const CIPHER_CODECS = {
+        base64: { marker: 'b.', shortCode: 'b', label: 'Base64' },
+        emoji: { marker: 'e.', shortCode: 'e', label: 'Emoji' },
+        cyrillic: { marker: 'r.', shortCode: 'r', label: 'Русский алфавит' }
+    };
 
     const IV_LEN = 12;
     const TAG_LEN = 16;
@@ -85,8 +102,8 @@
     let settings = {
         autoEncrypt: false,
         saveDerivedKeys: true,
-        decryptIncoming: true,
-        emojiCipher: false
+        autoDecrypt: true,
+        cipherCodec: 'emoji'
     };
 
     let isAutoSending = false;
@@ -117,15 +134,29 @@
     function loadSettings() {
         const saved = gmGetJson(STORAGE_KEYS.SETTINGS, null);
         if (saved && typeof saved === 'object') {
+            const normalized = { ...saved };
+
+            if (typeof normalized.autoDecrypt !== 'boolean' && typeof normalized.decryptIncoming === 'boolean') {
+                normalized.autoDecrypt = normalized.decryptIncoming;
+            }
+
+            if (!Object.prototype.hasOwnProperty.call(normalized, 'cipherCodec')) {
+                normalized.cipherCodec = normalized.emojiCipher ? 'emoji' : 'base64';
+            }
+
             settings = {
                 ...settings,
-                ...saved
+                ...normalized
             };
         }
     }
 
     function saveSettings() {
-        gmSetJson(STORAGE_KEYS.SETTINGS, settings);
+        gmSetJson(STORAGE_KEYS.SETTINGS, {
+            ...settings,
+            decryptIncoming: settings.autoDecrypt,
+            emojiCipher: settings.cipherCodec === 'emoji'
+        });
     }
 
     function isValidKeyHex(hex) {
@@ -251,45 +282,143 @@
         return data;
     }
 
-    function encodeBase64ToEmoji(b64) {
+    function encodeBase64ToAlphabet(b64, alphabet, padChar = '=') {
         let out = '';
 
         for (const ch of b64) {
             if (ch === '=') {
-                out += EMOJI_PAD;
+                out += padChar;
                 continue;
             }
 
             const idx = BASE64_ALPHABET.indexOf(ch);
             if (idx === -1) throw new Error('Invalid base64 char: ' + ch);
-
-            out += EMOJI_ALPHABET[idx];
+            out += alphabet[idx];
         }
 
-        return EMOJI_PAYLOAD_MARKER + out;
+        return out;
     }
 
-    function decodeEmojiToBase64(payload) {
-        if (!payload.startsWith(EMOJI_PAYLOAD_MARKER)) return payload;
-
-        const body = payload.slice(EMOJI_PAYLOAD_MARKER.length);
-        const chars = Array.from(body);
-
+    function decodeAlphabetToBase64(payload, alphabet, padChar = '=') {
         let out = '';
 
-        for (const emoji of chars) {
-            if (emoji === EMOJI_PAD) {
+        for (const symbol of Array.from(payload)) {
+            if (symbol === padChar) {
                 out += '=';
                 continue;
             }
 
-            const idx = EMOJI_ALPHABET.indexOf(emoji);
-            if (idx === -1) throw new Error('Invalid emoji cipher symbol: ' + emoji);
-
+            const idx = alphabet.indexOf(symbol);
+            if (idx === -1) throw new Error('Invalid cipher symbol: ' + symbol);
             out += BASE64_ALPHABET[idx];
         }
 
         return out;
+    }
+
+    function encodeBase64ToEmoji(b64) {
+        return encodeBase64ToAlphabet(b64, EMOJI_ALPHABET, EMOJI_PAD);
+    }
+
+    function decodeEmojiToBase64(payload) {
+        return decodeAlphabetToBase64(payload, EMOJI_ALPHABET, EMOJI_PAD);
+    }
+
+    function encodeBase64ToCyrillic(b64) {
+        return encodeBase64ToAlphabet(b64, CYRILLIC_ALPHABET);
+    }
+
+    function decodeCyrillicToBase64(payload) {
+        return decodeAlphabetToBase64(payload, CYRILLIC_ALPHABET);
+    }
+
+    function getCipherCodecConfig(codecId) {
+        return CIPHER_CODECS[codecId] || CIPHER_CODECS.emoji;
+    }
+
+    function normalizeCodecId(codecId) {
+        return Object.prototype.hasOwnProperty.call(CIPHER_CODECS, codecId) ? codecId : 'emoji';
+    }
+
+    function encodePayloadForCodec(b64, codecId) {
+        switch (normalizeCodecId(codecId)) {
+            case 'base64':
+                return b64;
+            case 'cyrillic':
+                return encodeBase64ToCyrillic(b64);
+            case 'emoji':
+            default:
+                return encodeBase64ToEmoji(b64);
+        }
+    }
+
+    function decodePayloadForCodec(payload, codecId) {
+        switch (normalizeCodecId(codecId)) {
+            case 'base64':
+                return payload;
+            case 'cyrillic':
+                return decodeCyrillicToBase64(payload);
+            case 'emoji':
+            default:
+                return decodeEmojiToBase64(payload);
+        }
+    }
+
+    function toCompactKeyId(slotId) {
+        const match = /^k([1-4])$/.exec(slotId);
+        return match ? match[1] : slotId;
+    }
+
+    function fromCompactKeyId(compactId) {
+        return /^[1-4]$/.test(compactId) ? `k${compactId}` : compactId;
+    }
+
+    function formatEncryptedMessage(slotId, payload, codecId) {
+        const codec = getCipherCodecConfig(codecId);
+        return `${COMPACT_PREFIX}${toCompactKeyId(slotId)}:${codec.shortCode}.${payload}`;
+    }
+
+    function parseEncryptedMessage(text) {
+        const trimmed = (text || '').trim();
+
+        if (trimmed.startsWith(LEGACY_PREFIX) && trimmed.endsWith(LEGACY_SUFFIX)) {
+            const inner = trimmed.slice(LEGACY_PREFIX.length, -LEGACY_SUFFIX.length);
+            const colon = inner.indexOf(':');
+            if (colon === -1) return null;
+
+            const keyId = inner.slice(0, colon);
+            const rawPayload = inner.slice(colon + 1);
+
+            if (rawPayload.startsWith(EMOJI_PAYLOAD_MARKER)) {
+                return {
+                    originalText: trimmed,
+                    keyId,
+                    codecId: 'emoji',
+                    encodedPayload: rawPayload.slice(EMOJI_PAYLOAD_MARKER.length)
+                };
+            }
+
+            return {
+                originalText: trimmed,
+                keyId,
+                codecId: 'base64',
+                encodedPayload: rawPayload
+            };
+        }
+
+        const compactMatch = /^Y([^:]+):([ber])\.(.+)$/s.exec(trimmed);
+        if (!compactMatch) return null;
+
+        return {
+            originalText: trimmed,
+            keyId: fromCompactKeyId(compactMatch[1]),
+            codecId: compactMatch[2] === 'e'
+                ? 'emoji'
+                : compactMatch[2] === 'r'
+                    ? 'cyrillic'
+                    : 'base64',
+            encodedPayload: compactMatch[3]
+        };
     }
 
     async function deriveKeyMaterialFromSeed(seedText) {
@@ -457,6 +586,8 @@
 
             .vk-p2p-modal {
                 width: min(480px, 100%);
+                max-height: calc(100vh - 32px);
+                overflow-y: auto;
                 background: #ffffff;
                 color: #111827;
                 border-radius: 18px;
@@ -488,6 +619,7 @@
             }
 
             .vk-p2p-input,
+            .vk-p2p-select,
             .vk-p2p-textarea {
                 width: 100%;
                 box-sizing: border-box;
@@ -502,6 +634,7 @@
             }
 
             .vk-p2p-input:focus,
+            .vk-p2p-select:focus,
             .vk-p2p-textarea:focus {
                 border-color: #2688eb;
                 box-shadow: 0 0 0 3px rgba(38, 136, 235, 0.15);
@@ -627,8 +760,11 @@
             .vk-p2p-menu {
                 position: fixed;
                 z-index: 999999;
-                min-width: 240px;
-                max-width: 340px;
+                box-sizing: border-box;
+                width: min(340px, calc(100vw - 16px));
+                max-width: calc(100vw - 16px);
+                max-height: calc(100vh - 16px);
+                overflow-y: auto;
                 padding: 8px;
                 border-radius: 14px;
                 background: #ffffff;
@@ -661,6 +797,28 @@
                 text-overflow: ellipsis;
                 white-space: nowrap;
                 max-width: 100%;
+            }
+
+            .vk-p2p-menu-field {
+                display: grid;
+                gap: 6px;
+                padding: 8px 10px;
+            }
+
+            .vk-p2p-menu-label {
+                color: #4b5563;
+                font-size: 12px;
+            }
+
+            .vk-p2p-menu-select {
+                width: 100%;
+                box-sizing: border-box;
+                border: 1px solid #d1d5db;
+                border-radius: 9px;
+                padding: 8px 10px;
+                background: #fff;
+                color: #111827;
+                font: inherit;
             }
 
             .vk-p2p-menu-item:hover {
@@ -829,10 +987,14 @@
                     <span>Включить автошифрование при отправке</span>
                 </label>
 
-                <label class="vk-p2p-check">
-                    <input id="vk-p2p-emoji-first" type="checkbox">
-                    <span>Шифротекст в emoji-алфавите вместо Base64</span>
+                <label class="vk-p2p-check" for="vk-p2p-codec-first">
+                    <span>Кодирование шифротекста</span>
                 </label>
+                <select class="vk-p2p-select" id="vk-p2p-codec-first">
+                    <option value="emoji">Emoji</option>
+                    <option value="cyrillic">Русский алфавит</option>
+                    <option value="base64">Base64</option>
+                </select>
 
                 <p class="vk-p2p-error" id="vk-p2p-seed-error"></p>
             `,
@@ -851,12 +1013,12 @@
         const error = modal.querySelector('#vk-p2p-seed-error');
         const saveCheckbox = modal.querySelector('#vk-p2p-save-derived');
         const autoCheckbox = modal.querySelector('#vk-p2p-auto-encrypt-first');
-        const emojiCheckbox = modal.querySelector('#vk-p2p-emoji-first');
+        const codecSelect = modal.querySelector('#vk-p2p-codec-first');
         const applyBtn = modal.querySelector('#vk-p2p-seed-apply');
         const tempBtn = modal.querySelector('#vk-p2p-seed-temp');
 
         autoCheckbox.checked = settings.autoEncrypt;
-        emojiCheckbox.checked = settings.emojiCipher;
+        codecSelect.value = normalizeCodecId(settings.cipherCodec);
 
         attachPasswordEye(input, eyeBtn);
 
@@ -883,7 +1045,7 @@
                 currentKeySlot = DEFAULT_KEY_SLOT;
 
                 settings.autoEncrypt = Boolean(autoCheckbox.checked);
-                settings.emojiCipher = Boolean(emojiCheckbox.checked);
+                settings.cipherCodec = normalizeCodecId(codecSelect.value);
                 settings.saveDerivedKeys = Boolean(saveMode);
                 saveSettings();
 
@@ -930,12 +1092,16 @@
                 </p>
 
                 <input class="vk-p2p-input" id="vk-p2p-custom-name"
-                    placeholder="Имя слота, например k5 или friend1">
+                    placeholder="Имя слота, например k5, друг или friend1">
 
                 <div style="height:8px"></div>
 
                 <textarea class="vk-p2p-textarea" id="vk-p2p-custom-key"
                     placeholder="64 hex-символа ИЛИ любое слово: собака, мой-друг, ..."></textarea>
+
+                <p class="vk-p2p-note">
+                    Имя слота может быть и на кириллице. Подходят буквы любого алфавита, цифры, _, -, . и @.
+                </p>
 
                 <p class="vk-p2p-error" id="vk-p2p-custom-error"></p>
             `,
@@ -973,8 +1139,8 @@
                 return;
             }
 
-            if (!/^[a-zA-Z0-9_.@-]{1,32}$/.test(name)) {
-                error.textContent = 'Имя может содержать буквы, цифры, _, -, . и @. До 32 символов.';
+            if (!/^[\p{L}\p{N}_.@-]{1,32}$/u.test(name)) {
+                error.textContent = 'Имя может содержать буквы любого алфавита, цифры, _, -, . и @. До 32 символов.';
                 error.style.display = 'block';
                 return;
             }
@@ -1184,12 +1350,14 @@
 
         const textSpan = document.createElement('span');
         textSpan.className = 'vk-dec-content';
+        textSpan.dataset.vkdecSkip = 'true';
         textSpan.textContent = decryptedText;
         textSpan.style.fontWeight = 'normal';
 
         const toggleLink = document.createElement('a');
         toggleLink.href = '#';
         toggleLink.className = 'vk-dec-toggle';
+        toggleLink.dataset.vkdecSkip = 'true';
         toggleLink.textContent = '[шифр]';
         toggleLink.title = 'Показать зашифрованный оригинал';
 
@@ -1216,33 +1384,25 @@
     }
 
     async function processIncomingMessage(msgEl) {
-        if (!settings.decryptIncoming) return;
+        if (!settings.autoDecrypt) return;
         if (!hasAnyKeys()) return;
         if (msgEl.dataset.vkdecDone) return;
 
         const text = msgEl.textContent?.trim() || '';
+        const parsed = parseEncryptedMessage(text);
+        if (!parsed) return;
 
-        if (!text.startsWith(PREFIX) || !text.endsWith(SUFFIX)) return;
-
-        const inner = text.slice(PREFIX.length, -SUFFIX.length);
-        const colon = inner.indexOf(':');
-
-        if (colon === -1) return;
-
-        const keyId = inner.slice(0, colon);
-        const rawPayload = inner.slice(colon + 1);
-        const payload = decodeEmojiToBase64(rawPayload);
-
-        const keyHex = getAllKeys()[keyId];
+        const keyHex = getAllKeys()[parsed.keyId];
 
         if (!keyHex) {
-            console.warn(`🔑 Ключ "${keyId}" не найден`);
+            console.warn(`🔑 Ключ "${parsed.keyId}" не найден`);
             return;
         }
 
         try {
+            const payload = decodePayloadForCodec(parsed.encodedPayload, parsed.codecId);
             const decrypted = await decryptAESGCM(payload, keyHex);
-            createToggleInterface(text, decrypted, msgEl);
+            createToggleInterface(parsed.originalText, decrypted, msgEl);
         } catch (err) {
             console.error('❌ Ошибка расшифровки:', err);
             msgEl.textContent = `[❌ Ошибка расшифровки: ${err.message}]`;
@@ -1255,14 +1415,19 @@
 
         document.querySelectorAll(
             '.ConvoMessage__text, .MessageText, .im_msg_text, .im-message--text'
-        ).forEach(el => elements.add(el));
+        ).forEach(el => {
+            if (el.closest('[data-vkdec-done="true"]')) return;
+            elements.add(el);
+        });
 
         document.querySelectorAll('[role="list"][aria-label*="Сообщения"]').forEach(list => {
             list.querySelectorAll('article span, article div').forEach(el => {
+                if (el.dataset.vkdecSkip === 'true') return;
+                if (el.closest('[data-vkdec-done="true"]')) return;
                 if (el.children.length) return;
 
                 const text = el.textContent?.trim() || '';
-                if (text.startsWith(PREFIX) && text.endsWith(SUFFIX)) {
+                if (parseEncryptedMessage(text)) {
                     elements.add(el);
                 }
             });
@@ -1424,7 +1589,7 @@
 
         if (!plainText) return false;
 
-        if (plainText.startsWith(PREFIX) && plainText.endsWith(SUFFIX)) {
+        if (parseEncryptedMessage(plainText)) {
             return true;
         }
 
@@ -1437,8 +1602,9 @@
 
         try {
             const b64 = await encryptAESGCM(plainText, keyHex);
-            const payload = settings.emojiCipher ? encodeBase64ToEmoji(b64) : b64;
-            const encryptedMsg = `${PREFIX}${currentKeySlot}:${payload}${SUFFIX}`;
+            const codecId = normalizeCodecId(settings.cipherCodec);
+            const payload = encodePayloadForCodec(b64, codecId);
+            const encryptedMsg = formatEncryptedMessage(currentKeySlot, payload, codecId);
 
             setInputPlainText(inputEl, encryptedMsg);
             lastEncryptedAt = Date.now();
@@ -1471,7 +1637,7 @@
         const plainText = getInputPlainText(inputEl);
         if (!plainText) return;
 
-        if (plainText.startsWith(PREFIX) && plainText.endsWith(SUFFIX)) {
+        if (parseEncryptedMessage(plainText)) {
             return;
         }
 
@@ -1661,11 +1827,9 @@
 
         const menu = document.createElement('div');
         menu.className = 'vk-p2p-menu';
-
-        const rect = anchorBtn.getBoundingClientRect();
-        menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 260))}px`;
-        menu.style.top = `${Math.max(8, rect.top - 8)}px`;
-        menu.style.transform = 'translateY(-100%)';
+        menu.style.left = '8px';
+        menu.style.top = '8px';
+        menu.style.visibility = 'hidden';
 
         const title = document.createElement('div');
         title.className = 'vk-p2p-menu-title';
@@ -1719,18 +1883,28 @@
             showToast(settings.autoEncrypt ? '✅ Автошифрование включено' : '⏸️ Автошифрование выключено');
         });
 
-        addMenuItem(menu, settings.emojiCipher ? '😀 Emoji-шифротекст: включён' : '🔤 Emoji-шифротекст: выключен', () => {
-            settings.emojiCipher = !settings.emojiCipher;
-            saveSettings();
-            closeMenus();
-            showToast(settings.emojiCipher ? '✅ Новые сообщения будут в emoji' : '✅ Новые сообщения будут в Base64');
-        });
+        addMenuSelect(
+            menu,
+            'Кодирование шифротекста',
+            'vk-p2p-cipher-codec-select',
+            normalizeCodecId(settings.cipherCodec),
+            [
+                { value: 'emoji', label: 'Emoji' },
+                { value: 'cyrillic', label: 'Русский алфавит' },
+                { value: 'base64', label: 'Base64' }
+            ],
+            value => {
+                settings.cipherCodec = normalizeCodecId(value);
+                saveSettings();
+                showToast(`✅ Новые сообщения будут в формате: ${getCipherCodecConfig(settings.cipherCodec).label}`);
+            }
+        );
 
-        addMenuItem(menu, settings.decryptIncoming ? '👁️ Расшифровка входящих: включена' : '🙈 Расшифровка входящих: выключена', () => {
-            settings.decryptIncoming = !settings.decryptIncoming;
+        addMenuItem(menu, settings.autoDecrypt ? '👁️ Авто-расшифровка: включена' : '🙈 Авто-расшифровка: выключена', () => {
+            settings.autoDecrypt = !settings.autoDecrypt;
             saveSettings();
             closeMenus();
-            showToast(settings.decryptIncoming ? '✅ Расшифровка включена' : '⏸️ Расшифровка выключена');
+            showToast(settings.autoDecrypt ? '✅ Авто-расшифровка включена' : '⏸️ Авто-расшифровка выключена');
             scan();
         });
 
@@ -1797,6 +1971,7 @@
         }, true);
 
         document.body.appendChild(menu);
+        positionMenu(menu, anchorBtn);
 
         setTimeout(() => {
             document.addEventListener('click', function closeOnce(e) {
@@ -1821,10 +1996,67 @@
         return item;
     }
 
+    function addMenuSelect(menu, label, id, value, options, onChange) {
+        const field = document.createElement('div');
+        field.className = 'vk-p2p-menu-field';
+
+        const labelEl = document.createElement('label');
+        labelEl.className = 'vk-p2p-menu-label';
+        labelEl.htmlFor = id;
+        labelEl.textContent = label;
+
+        const select = document.createElement('select');
+        select.className = 'vk-p2p-menu-select';
+        select.id = id;
+
+        options.forEach(option => {
+            const item = document.createElement('option');
+            item.value = option.value;
+            item.textContent = option.label;
+            select.appendChild(item);
+        });
+
+        select.value = value;
+        select.addEventListener('change', () => onChange(select.value));
+
+        field.appendChild(labelEl);
+        field.appendChild(select);
+        menu.appendChild(field);
+        return select;
+    }
+
     function addMenuSeparator(menu) {
         const sep = document.createElement('div');
         sep.className = 'vk-p2p-menu-sep';
         menu.appendChild(sep);
+    }
+
+    function positionMenu(menu, anchorBtn) {
+        const rect = anchorBtn.getBoundingClientRect();
+        const margin = 8;
+        const availableHeight = window.innerHeight - margin * 2;
+
+        menu.style.maxHeight = `${availableHeight}px`;
+
+        const menuRect = menu.getBoundingClientRect();
+        const width = menuRect.width;
+        const height = Math.min(menuRect.height, availableHeight);
+
+        if (menuRect.height > availableHeight) {
+            menu.style.height = `${availableHeight}px`;
+        } else {
+            menu.style.height = '';
+        }
+        const left = Math.max(margin, Math.min(rect.right - width, window.innerWidth - width - margin));
+        const preferredTop = rect.top - height - margin;
+        const fallbackTop = rect.bottom + margin;
+        const top = preferredTop >= margin
+            ? preferredTop
+            : Math.min(fallbackTop, window.innerHeight - height - margin);
+
+        menu.style.left = `${left}px`;
+        menu.style.top = `${Math.max(margin, top)}px`;
+        menu.style.visibility = 'visible';
     }
 
     // ============================================================
