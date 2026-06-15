@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK P2P AES-GCM
 // @namespace    local
-// @version      4.3
+// @version      5.0
 // @description  P2P шифрование VK: seed-фраза, сохранение ключей, пользовательские ключи, автошифрование, emoji-шифротекст
 // @author       VKEncrypt
 // @match        https://vk.com/*
@@ -22,7 +22,7 @@
     'use strict';
 
     // ============================================================
-    // VK P2P AES-GCM v4.3
+    // VK P2P AES-GCM v5.0
     //
     // Что умеет:
     // - НЕ показывает модалку сразу после установки.
@@ -39,11 +39,11 @@
     // ============================================================
 
     const APP_NAME = 'VK P2P AES-GCM';
-    const APP_VERSION = '4.3';
+    const APP_VERSION = '5.0';
 
-    const LEGACY_PREFIX = 'ENC[';
-    const LEGACY_SUFFIX = ']';
-    const COMPACT_PREFIX = 'Y';
+    const FORMAT_START = '𓁗';
+    const FORMAT_MID = 'Ⰴ';
+    const FORMAT_PAYLOAD = 'Ⱑ';
 
     const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
@@ -61,7 +61,6 @@
     ];
 
     const EMOJI_PAD = '🟰';
-    const EMOJI_PAYLOAD_MARKER = 'emj.';
     const CYRILLIC_ALPHABET = [
         'А','Б','В','Г','Д','Е','Ж','З',
         'И','Й','К','Л','М','Н','О','П',
@@ -74,9 +73,9 @@
     ];
 
     const CIPHER_CODECS = {
-        base64: { marker: 'b.', shortCode: 'b', label: 'Base64' },
-        emoji: { marker: 'e.', shortCode: 'e', label: 'Emoji' },
-        cyrillic: { marker: 'r.', shortCode: 'r', label: 'Русский алфавит' }
+        base64: { shortCode: 'b', label: 'Base64' },
+        emoji: { shortCode: 'e', label: 'Emoji' },
+        cyrillic: { shortCode: 'r', label: 'Русский алфавит' }
     };
 
     const IV_LEN = 12;
@@ -287,7 +286,6 @@
 
         for (const ch of b64) {
             if (ch === '=') {
-                out += padChar;
                 continue;
             }
 
@@ -313,7 +311,7 @@
             out += BASE64_ALPHABET[idx];
         }
 
-        return out;
+        return out + '='.repeat((4 - (out.length % 4)) % 4);
     }
 
     function encodeBase64ToEmoji(b64) {
@@ -343,7 +341,7 @@
     function encodePayloadForCodec(b64, codecId) {
         switch (normalizeCodecId(codecId)) {
             case 'base64':
-                return b64;
+                return b64.replace(/=+$/u, '');
             case 'cyrillic':
                 return encodeBase64ToCyrillic(b64);
             case 'emoji':
@@ -355,7 +353,7 @@
     function decodePayloadForCodec(payload, codecId) {
         switch (normalizeCodecId(codecId)) {
             case 'base64':
-                return payload;
+                return payload + '='.repeat((4 - (payload.length % 4)) % 4);
             case 'cyrillic':
                 return decodeCyrillicToBase64(payload);
             case 'emoji':
@@ -393,46 +391,12 @@
 
     function formatEncryptedMessage(slotId, payload, codecId) {
         const codec = getCipherCodecConfig(codecId);
-        return `${COMPACT_PREFIX}${toCompactKeyId(slotId)}:${codec.shortCode}.${payload}`;
+        return `${FORMAT_START}${toCompactKeyId(slotId)}${FORMAT_MID}${codec.shortCode}${FORMAT_PAYLOAD}${payload}`;
     }
 
     function parseEncryptedMessage(text) {
         const trimmed = (text || '').trim();
-
-        if (trimmed.startsWith(LEGACY_PREFIX) && trimmed.endsWith(LEGACY_SUFFIX)) {
-            const inner = trimmed.slice(LEGACY_PREFIX.length, -LEGACY_SUFFIX.length);
-            const colon = inner.indexOf(':');
-            if (colon === -1) return null;
-
-            const keyId = inner.slice(0, colon);
-            const rawPayload = inner.slice(colon + 1);
-
-            if (rawPayload.startsWith(EMOJI_PAYLOAD_MARKER)) {
-                const parsed = {
-                    originalText: trimmed,
-                    keyId,
-                    codecId: 'emoji',
-                    encodedPayload: rawPayload.slice(EMOJI_PAYLOAD_MARKER.length)
-                };
-
-                return isPlausibleEncodedPayload(parsed.encodedPayload, parsed.codecId)
-                    ? parsed
-                    : null;
-            }
-
-            const parsed = {
-                originalText: trimmed,
-                keyId,
-                codecId: 'base64',
-                encodedPayload: rawPayload
-            };
-
-            return isPlausibleEncodedPayload(parsed.encodedPayload, parsed.codecId)
-                ? parsed
-                : null;
-        }
-
-        const compactMatch = /^Y([^:]+):([ber])\.(.+)$/s.exec(trimmed);
+        const compactMatch = new RegExp(`^${FORMAT_START}(.+?)${FORMAT_MID}([ber])${FORMAT_PAYLOAD}(.+)$`, 'su').exec(trimmed);
         if (!compactMatch) return null;
 
         const parsed = {

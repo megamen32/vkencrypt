@@ -20,7 +20,6 @@ const EMOJI_ALPHABET = [
     '😭','😦','😧','😨','😩','🤯','😬','😰'
 ];
 const EMOJI_PAD = '🟰';
-const EMOJI_MARKER = 'emj.';
 const CYRILLIC_ALPHABET = [
     'А','Б','В','Г','Д','Е','Ж','З',
     'И','Й','К','Л','М','Н','О','П',
@@ -31,6 +30,9 @@ const CYRILLIC_ALPHABET = [
     'р','с','т','у','ф','х','ц','ч',
     'ш','щ','ъ','ы','ь','э','ю','я'
 ];
+const FORMAT_START = '𓁗';
+const FORMAT_MID = 'Ⰴ';
+const FORMAT_PAYLOAD = 'Ⱑ';
 
 function deriveKeyMaterialFromSeed(seed) {
     const derived = crypto.pbkdf2Sync(seed, KDF_SALT, KDF_ITERATIONS, 128, 'sha256');
@@ -65,17 +67,16 @@ function aesGcmDecrypt(b64Payload, keyHex) {
 function encodeBase64ToEmoji(b64) {
     let out = '';
     for (const ch of b64) {
-        if (ch === '=') { out += EMOJI_PAD; continue; }
+        if (ch === '=') { continue; }
         const idx = BASE64_ALPHABET.indexOf(ch);
         if (idx === -1) throw new Error('Invalid base64: ' + ch);
         out += EMOJI_ALPHABET[idx];
     }
-    return EMOJI_MARKER + out;
+    return out;
 }
 
 function decodeEmojiToBase64(payload) {
-    if (!payload.startsWith(EMOJI_MARKER)) return payload;
-    const body = Array.from(payload.slice(EMOJI_MARKER.length));
+    const body = Array.from(payload);
     let out = '';
     for (const ch of body) {
         if (ch === EMOJI_PAD) { out += '='; continue; }
@@ -83,13 +84,13 @@ function decodeEmojiToBase64(payload) {
         if (idx === -1) throw new Error('Invalid emoji: ' + ch);
         out += BASE64_ALPHABET[idx];
     }
-    return out;
+    return out + '='.repeat((4 - (out.length % 4)) % 4);
 }
 
 function encodeBase64ToCyrillic(b64) {
     let out = '';
     for (const ch of b64) {
-        if (ch === '=') { out += '='; continue; }
+        if (ch === '=') { continue; }
         const idx = BASE64_ALPHABET.indexOf(ch);
         if (idx === -1) throw new Error('Invalid base64: ' + ch);
         out += CYRILLIC_ALPHABET[idx];
@@ -100,12 +101,11 @@ function encodeBase64ToCyrillic(b64) {
 function decodeCyrillicToBase64(payload) {
     let out = '';
     for (const ch of Array.from(payload)) {
-        if (ch === '=') { out += '='; continue; }
         const idx = CYRILLIC_ALPHABET.indexOf(ch);
         if (idx === -1) throw new Error('Invalid cyrillic: ' + ch);
         out += BASE64_ALPHABET[idx];
     }
-    return out;
+    return out + '='.repeat((4 - (out.length % 4)) % 4);
 }
 
 test.describe('KDF (PBKDF2-SHA256 / 250k / salt vk-p2p-aes-gcm-v1)', () => {
@@ -181,18 +181,16 @@ test.describe('emoji-кодирование', () => {
         ];
         for (const s of samples) {
             const e = encodeBase64ToEmoji(s);
-            expect(e.startsWith(EMOJI_MARKER)).toBe(true);
             expect(decodeEmojiToBase64(e)).toBe(s);
         }
     });
 
-    test('в payload только символы из EMOJI_ALPHABET + паддинг', () => {
+    test('в payload только символы из EMOJI_ALPHABET без base64 padding', () => {
         const e = encodeBase64ToEmoji('aGVsbG8=');
-        const body = e.slice(EMOJI_MARKER.length);
-        for (const ch of Array.from(body)) {
-            if (ch === EMOJI_PAD) continue;
+        for (const ch of Array.from(e)) {
             expect(EMOJI_ALPHABET.includes(ch)).toBe(true);
         }
+        expect(e.includes(EMOJI_PAD)).toBe(false);
     });
 });
 
@@ -211,36 +209,17 @@ test.describe('русский алфавит-кодирование', () => {
     });
 });
 
-test.describe('формат ENC[k1:base64]', () => {
-    test('собирается и парсится', () => {
-        const k = deriveKeyMaterialFromSeed('тест').k1;
-        const b64 = aesGcmEncrypt('hello', k);
-        const msg = `ENC[k1:${b64}]`;
-        expect(msg.startsWith('ENC[')).toBe(true);
-        expect(msg.endsWith(']')).toBe(true);
-
-        const inner = msg.slice(4, -1);
-        const colonIdx = inner.indexOf(':');
-        expect(colonIdx).toBeGreaterThan(0);
-
-        const keyId = inner.slice(0, colonIdx);
-        const payload = inner.slice(colonIdx + 1);
-        expect(keyId).toBe('k1');
-        expect(aesGcmDecrypt(payload, k)).toBe('hello');
-    });
-});
-
-test.describe('короткий формат Y1:e.', () => {
+test.describe('новый формат 𓁗1ⰄeⰡ', () => {
     test('собирается и парсится', () => {
         const k = deriveKeyMaterialFromSeed('короткий формат').k1;
         const b64 = aesGcmEncrypt('hello', k);
-        const encoded = encodeBase64ToEmoji(b64).slice(EMOJI_MARKER.length);
-        const msg = `Y1:e.${encoded}`;
+        const encoded = encodeBase64ToEmoji(b64);
+        const msg = `${FORMAT_START}1${FORMAT_MID}e${FORMAT_PAYLOAD}${encoded}`;
 
-        const match = /^Y([^:]+):([ber])\.(.+)$/.exec(msg);
+        const match = new RegExp(`^${FORMAT_START}(.+?)${FORMAT_MID}([ber])${FORMAT_PAYLOAD}(.+)$`, 'u').exec(msg);
         expect(match).not.toBeNull();
         expect(match[1]).toBe('1');
         expect(match[2]).toBe('e');
-        expect(aesGcmDecrypt(decodeEmojiToBase64(`${EMOJI_MARKER}${match[3]}`), k)).toBe('hello');
+        expect(aesGcmDecrypt(decodeEmojiToBase64(match[3]), k)).toBe('hello');
     });
 });
