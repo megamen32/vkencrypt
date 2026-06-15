@@ -245,6 +245,45 @@ test('auto decrypt off: шифротекст остаётся как есть д
     await expect(page.locator('.ConvoMessage__text')).toContainText('Y1:e.');
 });
 
+test('invalid compact payload: похожий префикс не должен вызывать ошибку расшифровки', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для ложного совпадения');
+    const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    page.on('console', msg => {
+        if (msg.type() === 'error') errors.push('console.error: ' + msg.text());
+    });
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_custom_keys_v1: JSON.stringify({
+                asd: {
+                    key: deriveDerivedKeys('custom-asd').k1,
+                    label: 'asd',
+                },
+            }),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings()),
+        },
+        body: `
+            <div class="ConvoMessage__text">Yasd:e.not-really-encrypted</div>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-dec-content')).toHaveCount(0);
+    await expect(page.locator('.ConvoMessage__text')).toContainText('Yasd:e.not-really-encrypted');
+    expect(errors, errors.join('\n')).toEqual([]);
+});
+
 test('toggle cipher: клик по [шифр] не пере-расшифровывает сообщение обратно', async ({ page }) => {
     const seed = 'seed для toggle';
     const derived = deriveDerivedKeys(seed);

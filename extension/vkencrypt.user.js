@@ -364,6 +364,24 @@
         }
     }
 
+    function isValidBase64Payload(payload) {
+        return typeof payload === 'string'
+            && payload.length >= 4
+            && payload.length % 4 === 0
+            && /^[A-Za-z0-9+/]+={0,2}$/.test(payload);
+    }
+
+    function isPlausibleEncodedPayload(payload, codecId) {
+        if (typeof payload !== 'string' || !payload) return false;
+
+        try {
+            const b64 = decodePayloadForCodec(payload, codecId);
+            return isValidBase64Payload(b64);
+        } catch {
+            return false;
+        }
+    }
+
     function toCompactKeyId(slotId) {
         const match = /^k([1-4])$/.exec(slotId);
         return match ? match[1] : slotId;
@@ -409,7 +427,7 @@
         const compactMatch = /^Y([^:]+):([ber])\.(.+)$/s.exec(trimmed);
         if (!compactMatch) return null;
 
-        return {
+        const parsed = {
             originalText: trimmed,
             keyId: fromCompactKeyId(compactMatch[1]),
             codecId: compactMatch[2] === 'e'
@@ -419,6 +437,10 @@
                     : 'base64',
             encodedPayload: compactMatch[3]
         };
+
+        return isPlausibleEncodedPayload(parsed.encodedPayload, parsed.codecId)
+            ? parsed
+            : null;
     }
 
     async function deriveKeyMaterialFromSeed(seedText) {
