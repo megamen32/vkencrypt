@@ -69,7 +69,7 @@ echo ""
 EXT_DIR="$PROJECT_DIR/../extension"
 if [[ -x "$EXT_DIR/build.sh" ]]; then
     echo "Собираю userscript для расширения..."
-    ENV_FILE="$ENV_FILE" "$EXT_DIR/build.sh" || true
+    "$EXT_DIR/build.sh" || true
     echo ""
     echo "════════════════════════════════════════════════════════════════"
     echo "📱 Собранный userscript: $EXT_DIR/dist/"
@@ -80,3 +80,5 @@ fi
 
 echo ""
 echo "📝 Логи: sudo journalctl -u $SERVICE_NAME -f"
+echo ""
+echo "💡 Ключи можно добавить позже в чате: /setseed <фраза> или /setkey <id> <64-hex>"

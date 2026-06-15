@@ -1,50 +1,193 @@
 // ==UserScript==
-// @name         VK P2P AES-GCM (Key Input)
+// @name         VK P2P AES-GCM
 // @namespace    local
-// @version      3.4
-// @description  P2P шифрование + ввод ключа прямо в интерфейсе (без сохранения)
+// @version      4.0
+// @description  P2P шифрование VK: seed-фраза, сохранение ключей, пользовательские ключи, автошифрование, emoji-шифротекст
 // @author       VKEncrypt
 // @match        https://vk.com/*
 // @match        https://m.vk.com/*
-// @grant        none
+// @match        https://vk.ru/*
+// @match        https://m.vk.ru/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js
 // @downloadURL  https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     // ============================================================
-    // ⚠️  ВНИМАНИЕ: ЭТО ДЕМО-КЛЮЧИ. ИХ ВИДИТ ЛЮБОЙ, КТО ЧИТАЛ README.
-    // ⚠️  ПЕРЕД СЕРЬЁЗНЫМ ИСПОЛЬЗОВАНИЕМ ОБЯЗАТЕЛЬНО ЗАМЕНИ:
-    // ⚠️    1) сгенерируй новые:  cd bot && python3 gen_key.py
-    // ⚠️    2) впиши их в bot/.env как PRE_SHARED_KEY_K1..K4
-    // ⚠️    3) пересобери userscript: cd extension && ./build.sh
-    // ⚠️    4) переустанови userscript в Tampermonkey (Replace)
-    // ⚠️  Либо используй 🔑 → ⚡ сгенерировать новый ключ (P2P, без правки файлов).
+    // VK P2P AES-GCM v4.1
+    //
+    // Что умеет:
+    // - НЕ показывает модалку сразу после установки.
+    // - Пока ключей нет, кнопки возле поля ввода открывают настройку.
+    // - В seed-модалках есть "глаз" для просмотра вводимой фразы.
+    // - Из seed-фразы детерминированно генерирует k1..k4.
+    // - Сохраняет НЕ seed-фразу, а только производные ключи.
+    // - Поддерживает пользовательские ключи 64 hex.
+    // - Поддерживает временный ключ только в памяти.
+    // - Умеет автошифровать при клике отправки и при Enter.
+    // - Shift+Enter оставляет как перенос строки.
+    // - При включённом автошифровании ручной замок скрывается.
+    // - Опционально кодирует payload в emoji-алфавит.
     // ============================================================
-    const STATIC_KEYS = {
-        "k1": "739d0532b4c9d21868c95928132c9d2864c28ab4446efa66ebb38ac3a1d26758",
-        "k2": "1579579225afbbd602ca0cbcd3507debd5efe0469b0b6ea5b2faaf9415da443c",
-        "k3": "42a2f05bacefb47b48c109ae68c752bbd1c2f77cbaae4eed6aac1daeab0bbd32",
-        "k4": "8f5cc901e7658fd6b1e66dfef11534a5497a30948434e6295202457cafaca0af",
-    };
 
-    // === ⚡ Временный ключ (только в памяти!) ===
-    let TEMP_KEY = null; // Исчезнет при перезагрузке страницы
+    const APP_NAME = 'VK P2P AES-GCM';
+    const APP_VERSION = '4.0';
 
-    const DEFAULT_KEY_SLOT = "k1";
-    let currentKeySlot = DEFAULT_KEY_SLOT;
+    const PREFIX = 'ENC[';
+    const SUFFIX = ']';
 
-    const PREFIX = "ENC[";
-    const SUFFIX = "]";
+    const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+    // 64 emoji для замены Base64-символов.
+    // Важно: режим emoji опциональный, Base64 надёжнее для копирования/пересылки.
+    const EMOJI_ALPHABET = [
+        '😀','😁','😂','🤣','😃','😄','😅','😆',
+        '😉','😊','😋','😎','😍','😘','🥰','😗',
+        '😙','😚','🙂','🤗','🤩','🤔','🤨','😐',
+        '😑','😶','🙄','😏','😣','😥','😮','🤐',
+        '😯','😪','😫','🥱','😴','😌','😛','😜',
+        '😝','🤤','😒','😓','😔','😕','🙃','🤑',
+        '😲','😡','🤬','😖','😞','😟','😤','😢',
+        '😭','😦','😧','😨','😩','🤯','😬','😰'
+    ];
+
+    const EMOJI_PAD = '🟰';
+    const EMOJI_PAYLOAD_MARKER = 'emj.';
+
     const IV_LEN = 12;
     const TAG_LEN = 16;
 
-    // --- Утилиты ---
+    const DEFAULT_KEY_SLOT = 'k1';
+
+    const STORAGE_KEYS = {
+        DERIVED_KEYS: 'vk_p2p_derived_keys_v1',
+        CUSTOM_KEYS: 'vk_p2p_custom_keys_v1',
+        SETTINGS: 'vk_p2p_settings_v1'
+    };
+
+    const KDF_SALT = 'vk-p2p-aes-gcm-v1';
+    const KDF_ITERATIONS = 250000;
+
+    let DERIVED_KEYS = null;
+    let CUSTOM_KEYS = {};
+    let TEMP_KEY = null;
+
+    let currentKeySlot = DEFAULT_KEY_SLOT;
+
+    let settings = {
+        autoEncrypt: false,
+        saveDerivedKeys: true,
+        decryptIncoming: true,
+        emojiCipher: false
+    };
+
+    let isAutoSending = false;
+    let lastEncryptedAt = 0;
+
+    // ============================================================
+    // Storage
+    // ============================================================
+
+    function safeJsonParse(value, fallback) {
+        try {
+            if (!value) return fallback;
+            return JSON.parse(value);
+        } catch {
+            return fallback;
+        }
+    }
+
+    function gmGetJson(key, fallback) {
+        return safeJsonParse(GM_getValue(key, null), fallback);
+    }
+
+    function gmSetJson(key, value) {
+        GM_setValue(key, JSON.stringify(value));
+    }
+
+    function loadSettings() {
+        const saved = gmGetJson(STORAGE_KEYS.SETTINGS, null);
+        if (saved && typeof saved === 'object') {
+            settings = {
+                ...settings,
+                ...saved
+            };
+        }
+    }
+
+    function saveSettings() {
+        gmSetJson(STORAGE_KEYS.SETTINGS, settings);
+    }
+
+    function isValidKeyHex(hex) {
+        return typeof hex === 'string' && /^[0-9a-f]{64}$/i.test(hex);
+    }
+
+    function areValidDerivedKeys(keys) {
+        return Boolean(
+            keys &&
+            isValidKeyHex(keys.k1) &&
+            isValidKeyHex(keys.k2) &&
+            isValidKeyHex(keys.k3) &&
+            isValidKeyHex(keys.k4)
+        );
+    }
+
+    function normalizeKeyObject(obj) {
+        const out = {};
+        for (const [k, v] of Object.entries(obj || {})) {
+            if (isValidKeyHex(v)) out[k] = String(v).toLowerCase();
+        }
+        return out;
+    }
+
+    function loadDerivedKeys() {
+        const saved = gmGetJson(STORAGE_KEYS.DERIVED_KEYS, null);
+        if (areValidDerivedKeys(saved)) return normalizeKeyObject(saved);
+        return null;
+    }
+
+    function saveDerivedKeys(keys) {
+        if (!areValidDerivedKeys(keys)) return;
+        gmSetJson(STORAGE_KEYS.DERIVED_KEYS, normalizeKeyObject(keys));
+    }
+
+    function clearDerivedKeys() {
+        GM_deleteValue(STORAGE_KEYS.DERIVED_KEYS);
+        DERIVED_KEYS = null;
+    }
+
+    function loadCustomKeys() {
+        const saved = gmGetJson(STORAGE_KEYS.CUSTOM_KEYS, {});
+        CUSTOM_KEYS = normalizeKeyObject(saved);
+    }
+
+    function saveCustomKeys() {
+        gmSetJson(STORAGE_KEYS.CUSTOM_KEYS, CUSTOM_KEYS);
+    }
+
+    function resetAllKeys() {
+        clearDerivedKeys();
+        GM_deleteValue(STORAGE_KEYS.CUSTOM_KEYS);
+        CUSTOM_KEYS = {};
+        TEMP_KEY = null;
+        currentKeySlot = DEFAULT_KEY_SLOT;
+        updateEncryptButtonsTitle();
+        showSeedSetupModal();
+    }
+
+    // ============================================================
+    // Crypto helpers
+    // ============================================================
+
     function hexToBytes(hex) {
-        if (hex.length % 2 !== 0) throw new Error("Invalid hex");
+        if (!isValidKeyHex(hex)) throw new Error('Invalid key hex');
         const arr = new Uint8Array(hex.length / 2);
         for (let i = 0; i < hex.length; i += 2) {
             arr[i / 2] = parseInt(hex.substr(i, 2), 16);
@@ -52,61 +195,885 @@
         return arr;
     }
 
-    function getAllKeys() {
-        // Объединяем статические + временный ключ
-        const all = { ...STATIC_KEYS };
-        if (TEMP_KEY) all["@temp"] = TEMP_KEY;
-        return all;
+    function bytesToHex(bytes) {
+        return Array.from(bytes)
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('');
     }
 
-    // --- Криптография ---
-    async function decryptAESGCM(b64Payload, keyHex) {
-        const bin = atob(b64Payload);
-        const data = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+    function bytesToBase64(bytes) {
+        let binary = '';
+        const chunkSize = 0x8000;
 
-        if (data.length < IV_LEN + TAG_LEN) throw new Error("Data too short");
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+            const chunk = bytes.subarray(i, i + chunkSize);
+            binary += String.fromCharCode.apply(null, chunk);
+        }
+
+        return btoa(binary);
+    }
+
+    function base64ToBytes(b64) {
+        const bin = atob(b64);
+        const data = new Uint8Array(bin.length);
+
+        for (let i = 0; i < bin.length; i++) {
+            data[i] = bin.charCodeAt(i);
+        }
+
+        return data;
+    }
+
+    function encodeBase64ToEmoji(b64) {
+        let out = '';
+
+        for (const ch of b64) {
+            if (ch === '=') {
+                out += EMOJI_PAD;
+                continue;
+            }
+
+            const idx = BASE64_ALPHABET.indexOf(ch);
+            if (idx === -1) throw new Error('Invalid base64 char: ' + ch);
+
+            out += EMOJI_ALPHABET[idx];
+        }
+
+        return EMOJI_PAYLOAD_MARKER + out;
+    }
+
+    function decodeEmojiToBase64(payload) {
+        if (!payload.startsWith(EMOJI_PAYLOAD_MARKER)) return payload;
+
+        const body = payload.slice(EMOJI_PAYLOAD_MARKER.length);
+        const chars = Array.from(body);
+
+        let out = '';
+
+        for (const emoji of chars) {
+            if (emoji === EMOJI_PAD) {
+                out += '=';
+                continue;
+            }
+
+            const idx = EMOJI_ALPHABET.indexOf(emoji);
+            if (idx === -1) throw new Error('Invalid emoji cipher symbol: ' + emoji);
+
+            out += BASE64_ALPHABET[idx];
+        }
+
+        return out;
+    }
+
+    async function deriveKeyMaterialFromSeed(seedText) {
+        const encoder = new TextEncoder();
+
+        const baseKey = await crypto.subtle.importKey(
+            'raw',
+            encoder.encode(seedText),
+            'PBKDF2',
+            false,
+            ['deriveBits']
+        );
+
+        const bits = await crypto.subtle.deriveBits(
+            {
+                name: 'PBKDF2',
+                salt: encoder.encode(KDF_SALT),
+                iterations: KDF_ITERATIONS,
+                hash: 'SHA-256'
+            },
+            baseKey,
+            1024
+        );
+
+        const bytes = new Uint8Array(bits);
+
+        return {
+            k1: bytesToHex(bytes.slice(0, 32)),
+            k2: bytesToHex(bytes.slice(32, 64)),
+            k3: bytesToHex(bytes.slice(64, 96)),
+            k4: bytesToHex(bytes.slice(96, 128))
+        };
+    }
+
+    async function encryptAESGCM(plainText, keyHex) {
+        const key = await crypto.subtle.importKey(
+            'raw',
+            hexToBytes(keyHex),
+            { name: 'AES-GCM' },
+            false,
+            ['encrypt']
+        );
+
+        const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
+        const data = new TextEncoder().encode(plainText);
+
+        const encrypted = await crypto.subtle.encrypt(
+            { name: 'AES-GCM', iv, tagLength: 128 },
+            key,
+            data
+        );
+
+        const encryptedArr = new Uint8Array(encrypted);
+        const payload = new Uint8Array(iv.length + encryptedArr.length);
+
+        payload.set(iv);
+        payload.set(encryptedArr, iv.length);
+
+        return bytesToBase64(payload);
+    }
+
+    async function decryptAESGCM(b64Payload, keyHex) {
+        const data = base64ToBytes(b64Payload);
+
+        if (data.length < IV_LEN + TAG_LEN) {
+            throw new Error('Data too short');
+        }
 
         const iv = data.slice(0, IV_LEN);
         const ciphertextWithTag = data.slice(IV_LEN);
 
         const key = await crypto.subtle.importKey(
-            "raw", hexToBytes(keyHex), { name: "AES-GCM" }, false, ["decrypt"]
+            'raw',
+            hexToBytes(keyHex),
+            { name: 'AES-GCM' },
+            false,
+            ['decrypt']
         );
 
         const decrypted = await crypto.subtle.decrypt(
-            { name: "AES-GCM", iv, tagLength: 128 }, key, ciphertextWithTag
+            { name: 'AES-GCM', iv, tagLength: 128 },
+            key,
+            ciphertextWithTag
         );
 
         return new TextDecoder().decode(decrypted);
     }
 
-    async function encryptAESGCM(plainText, keyHex) {
-        const key = await crypto.subtle.importKey(
-            "raw", hexToBytes(keyHex), { name: "AES-GCM" }, false, ["encrypt"]
-        );
+    function getAllKeys() {
+        const all = {};
 
-        const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
-        const encoder = new TextEncoder();
-        const data = encoder.encode(plainText);
+        if (DERIVED_KEYS) Object.assign(all, DERIVED_KEYS);
+        if (CUSTOM_KEYS) Object.assign(all, CUSTOM_KEYS);
+        if (TEMP_KEY) all['@temp'] = TEMP_KEY;
 
-        const encrypted = await crypto.subtle.encrypt(
-            { name: "AES-GCM", iv, tagLength: 128 }, key, data
-        );
-
-        const encryptedArr = new Uint8Array(encrypted);
-        const payload = new Uint8Array(iv.length + encryptedArr.length);
-        payload.set(iv);
-        payload.set(encryptedArr, iv.length);
-
-        let binary = '';
-        for (let i = 0; i < payload.length; i++) {
-            binary += String.fromCharCode(payload[i]);
-        }
-        return btoa(binary);
+        return all;
     }
 
-    // --- UI: Переключатель [шифр]/[текст] ---
+    function getCurrentKeyHex() {
+        return getAllKeys()[currentKeySlot] || null;
+    }
+
+    function hasAnyKeys() {
+        return Boolean(DERIVED_KEYS || Object.keys(CUSTOM_KEYS).length || TEMP_KEY);
+    }
+
+    // ============================================================
+    // Styles
+    // ============================================================
+
+    function injectStyles() {
+        if (document.getElementById('vk-p2p-styles')) return;
+
+        const style = document.createElement('style');
+        style.id = 'vk-p2p-styles';
+        style.textContent = `
+            @keyframes vkP2PFadeIn {
+                from { opacity: 0; transform: translateY(8px) scale(0.98); }
+                to { opacity: 1; transform: translateY(0) scale(1); }
+            }
+
+            @keyframes vkP2PToastOut {
+                0% { opacity: 1; transform: translate(-50%, 0); }
+                75% { opacity: 1; transform: translate(-50%, 0); }
+                100% { opacity: 0; transform: translate(-50%, 12px); }
+            }
+
+            .vk-p2p-overlay {
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.62);
+                z-index: 999999;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 16px;
+                box-sizing: border-box;
+                backdrop-filter: blur(4px);
+            }
+
+            .vk-p2p-modal {
+                width: min(480px, 100%);
+                background: #ffffff;
+                color: #111827;
+                border-radius: 18px;
+                box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+                padding: 20px;
+                box-sizing: border-box;
+                animation: vkP2PFadeIn 0.18s ease-out;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            }
+
+            .vk-p2p-modal h3 {
+                margin: 0 0 8px;
+                font-size: 18px;
+                line-height: 1.25;
+                font-weight: 700;
+            }
+
+            .vk-p2p-modal p {
+                margin: 0 0 12px;
+                font-size: 13px;
+                line-height: 1.45;
+                color: #4b5563;
+            }
+
+            .vk-p2p-row {
+                display: flex;
+                gap: 8px;
+                align-items: center;
+            }
+
+            .vk-p2p-input,
+            .vk-p2p-textarea {
+                width: 100%;
+                box-sizing: border-box;
+                border: 1px solid #d1d5db;
+                background: #fff;
+                color: #111827;
+                border-radius: 10px;
+                padding: 11px 12px;
+                font-size: 14px;
+                outline: none;
+                transition: border-color 0.15s, box-shadow 0.15s;
+            }
+
+            .vk-p2p-input:focus,
+            .vk-p2p-textarea:focus {
+                border-color: #2688eb;
+                box-shadow: 0 0 0 3px rgba(38, 136, 235, 0.15);
+            }
+
+            .vk-p2p-textarea {
+                min-height: 84px;
+                resize: vertical;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            }
+
+            .vk-p2p-check {
+                display: flex;
+                align-items: flex-start;
+                gap: 8px;
+                font-size: 13px;
+                line-height: 1.35;
+                color: #374151;
+                margin: 8px 0 12px;
+                user-select: none;
+            }
+
+            .vk-p2p-check input {
+                margin-top: 2px;
+            }
+
+            .vk-p2p-actions {
+                display: flex;
+                justify-content: flex-end;
+                gap: 8px;
+                margin-top: 14px;
+                flex-wrap: wrap;
+            }
+
+            .vk-p2p-btn {
+                border: none;
+                border-radius: 10px;
+                padding: 9px 13px;
+                font-size: 13px;
+                cursor: pointer;
+                transition: transform 0.08s, opacity 0.15s, background 0.15s;
+                white-space: nowrap;
+            }
+
+            .vk-p2p-btn:active {
+                transform: translateY(1px);
+            }
+
+            .vk-p2p-btn:disabled {
+                opacity: 0.55;
+                cursor: default;
+            }
+
+            .vk-p2p-btn-primary {
+                background: #2688eb;
+                color: #fff;
+            }
+
+            .vk-p2p-btn-secondary {
+                background: #f3f4f6;
+                color: #111827;
+            }
+
+            .vk-p2p-btn-danger {
+                background: #fee2e2;
+                color: #991b1b;
+            }
+
+            .vk-p2p-eye-btn {
+                min-width: 44px;
+                padding-left: 10px;
+                padding-right: 10px;
+            }
+
+            .vk-p2p-error {
+                display: none;
+                color: #b91c1c !important;
+                font-size: 12px !important;
+                margin-top: 8px !important;
+            }
+
+            .vk-p2p-note {
+                border-radius: 12px;
+                padding: 10px 12px;
+                background: #f3f7ff;
+                color: #31527a !important;
+                font-size: 12px !important;
+            }
+
+            .vk-p2p-controls {
+                display: inline-flex;
+                align-items: center;
+                gap: 2px;
+                margin-right: 4px;
+                vertical-align: middle;
+            }
+
+            .vk-p2p-icon-btn {
+                background: transparent;
+                border: none;
+                cursor: pointer;
+                color: inherit;
+                opacity: 0.58;
+                padding: 7px 5px;
+                border-radius: 8px;
+                line-height: 1;
+                transition: opacity 0.15s, background 0.15s;
+            }
+
+            .vk-p2p-icon-btn:hover {
+                opacity: 1;
+                background: rgba(127, 127, 127, 0.10);
+            }
+
+            .vk-p2p-icon-btn-main {
+                font-size: 18px;
+            }
+
+            .vk-p2p-icon-btn-small {
+                font-size: 15px;
+            }
+
+            .vk-p2p-menu {
+                position: fixed;
+                z-index: 999999;
+                min-width: 240px;
+                max-width: 340px;
+                padding: 8px;
+                border-radius: 14px;
+                background: #ffffff;
+                color: #111827;
+                box-shadow: 0 18px 48px rgba(0,0,0,0.24);
+                border: 1px solid rgba(0,0,0,0.10);
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+                font-size: 13px;
+                animation: vkP2PFadeIn 0.12s ease-out;
+            }
+
+            .vk-p2p-menu-title {
+                padding: 7px 9px 6px;
+                color: #6b7280;
+                font-size: 12px;
+            }
+
+            .vk-p2p-menu-item {
+                display: block;
+                width: 100%;
+                border: none;
+                background: transparent;
+                color: inherit;
+                text-align: left;
+                padding: 9px 10px;
+                border-radius: 9px;
+                cursor: pointer;
+                font: inherit;
+            }
+
+            .vk-p2p-menu-item:hover {
+                background: #f3f4f6;
+            }
+
+            .vk-p2p-menu-item-active {
+                background: #e8f1ff;
+                color: #155aa3;
+            }
+
+            .vk-p2p-menu-sep {
+                border-top: 1px solid #eef0f3;
+                margin: 6px 0;
+            }
+
+            .vk-p2p-menu-danger {
+                color: #b91c1c;
+            }
+
+            .vk-p2p-toast {
+                position: fixed;
+                left: 50%;
+                bottom: 22px;
+                transform: translateX(-50%);
+                background: #1f2937;
+                color: #fff;
+                padding: 10px 14px;
+                border-radius: 12px;
+                font-size: 13px;
+                z-index: 1000000;
+                box-shadow: 0 8px 28px rgba(0,0,0,0.25);
+                animation: vkP2PToastOut 2.4s forwards;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            }
+
+            .vk-dec-content {
+                white-space: pre-wrap;
+            }
+
+            .vk-dec-toggle {
+                display: inline-block;
+                margin-left: 8px;
+                font-size: 11px;
+                text-decoration: underline;
+                cursor: pointer;
+                opacity: 0.65;
+                user-select: none;
+                color: inherit;
+            }
+
+            .vk-dec-toggle:hover {
+                opacity: 1;
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    // ============================================================
+    // UI helpers
+    // ============================================================
+
+    function showToast(text) {
+        injectStyles();
+
+        const old = document.querySelector('.vk-p2p-toast');
+        if (old) old.remove();
+
+        const toast = document.createElement('div');
+        toast.className = 'vk-p2p-toast';
+        toast.textContent = text;
+
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2500);
+    }
+
+    function createModal({ title, bodyHtml, actionsHtml = '', closeOnOverlay = true }) {
+        injectStyles();
+
+        const overlay = document.createElement('div');
+        overlay.className = 'vk-p2p-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'vk-p2p-modal';
+
+        modal.innerHTML = `
+            <h3>${title}</h3>
+            ${bodyHtml}
+            ${actionsHtml ? `<div class="vk-p2p-actions">${actionsHtml}</div>` : ''}
+        `;
+
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+
+        if (closeOnOverlay) {
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) overlay.remove();
+            });
+        }
+
+        return { overlay, modal };
+    }
+
+    function attachPasswordEye(input, eyeBtn) {
+        eyeBtn.addEventListener('click', () => {
+            input.type = input.type === 'password' ? 'text' : 'password';
+            eyeBtn.textContent = input.type === 'password' ? '👁️' : '🙈';
+            input.focus();
+        });
+    }
+
+    function closeMenus() {
+        document.querySelectorAll('.vk-p2p-menu').forEach(el => el.remove());
+    }
+
+    // ============================================================
+    // Setup modal
+    // ============================================================
+
+    function showSeedSetupModal() {
+        if (document.querySelector('.vk-p2p-overlay')) return;
+
+        const { overlay, modal } = createModal({
+            title: '🔐 Настройка VKEncrypt',
+            closeOnOverlay: true,
+            bodyHtml: `
+                <p>
+                    Введите секретное слово, число или фразу. Из неё будут созданы одинаковые ключи
+                    <b>k1–k4</b> на всех устройствах, где введена та же фраза.
+                </p>
+
+                <p class="vk-p2p-note">
+                    Лучше использовать длинную фразу из нескольких слов. Простые числа вроде <b>1234</b>
+                    легко перебираются. Фраза не сохраняется — сохраняются только производные ключи.
+                </p>
+
+                <div class="vk-p2p-row">
+                    <input class="vk-p2p-input" id="vk-p2p-seed-input" type="password"
+                        placeholder="Например: длинная секретная фраза">
+                    <button class="vk-p2p-btn vk-p2p-btn-secondary vk-p2p-eye-btn" id="vk-p2p-seed-eye" type="button">👁️</button>
+                </div>
+
+                <label class="vk-p2p-check">
+                    <input id="vk-p2p-save-derived" type="checkbox" checked>
+                    <span>Сохранить производные ключи на этом устройстве</span>
+                </label>
+
+                <label class="vk-p2p-check">
+                    <input id="vk-p2p-auto-encrypt-first" type="checkbox">
+                    <span>Включить автошифрование при отправке</span>
+                </label>
+
+                <label class="vk-p2p-check">
+                    <input id="vk-p2p-emoji-first" type="checkbox">
+                    <span>Шифротекст в emoji-алфавите вместо Base64</span>
+                </label>
+
+                <p class="vk-p2p-error" id="vk-p2p-seed-error"></p>
+            `,
+            actionsHtml: `
+                <button class="vk-p2p-btn vk-p2p-btn-secondary" id="vk-p2p-seed-temp">
+                    Только на эту сессию
+                </button>
+                <button class="vk-p2p-btn vk-p2p-btn-primary" id="vk-p2p-seed-apply">
+                    Создать ключи
+                </button>
+            `
+        });
+
+        const input = modal.querySelector('#vk-p2p-seed-input');
+        const eyeBtn = modal.querySelector('#vk-p2p-seed-eye');
+        const error = modal.querySelector('#vk-p2p-seed-error');
+        const saveCheckbox = modal.querySelector('#vk-p2p-save-derived');
+        const autoCheckbox = modal.querySelector('#vk-p2p-auto-encrypt-first');
+        const emojiCheckbox = modal.querySelector('#vk-p2p-emoji-first');
+        const applyBtn = modal.querySelector('#vk-p2p-seed-apply');
+        const tempBtn = modal.querySelector('#vk-p2p-seed-temp');
+
+        autoCheckbox.checked = settings.autoEncrypt;
+        emojiCheckbox.checked = settings.emojiCipher;
+
+        attachPasswordEye(input, eyeBtn);
+
+        setTimeout(() => input.focus(), 80);
+
+        async function applySeed(saveMode) {
+            const seed = input.value.trim();
+
+            if (seed.length < 6) {
+                error.textContent = 'Слишком коротко. Лучше минимум 12 символов или несколько слов.';
+                error.style.display = 'block';
+                return;
+            }
+
+            error.style.display = 'none';
+            applyBtn.disabled = true;
+            tempBtn.disabled = true;
+            applyBtn.textContent = 'Создаю...';
+
+            try {
+                const keys = await deriveKeyMaterialFromSeed(seed);
+
+                DERIVED_KEYS = keys;
+                currentKeySlot = DEFAULT_KEY_SLOT;
+
+                settings.autoEncrypt = Boolean(autoCheckbox.checked);
+                settings.emojiCipher = Boolean(emojiCheckbox.checked);
+                settings.saveDerivedKeys = Boolean(saveMode);
+                saveSettings();
+
+                if (saveMode) saveDerivedKeys(keys);
+
+                overlay.remove();
+                updateEncryptButtonsTitle();
+                scan();
+
+                showToast(saveMode ? '✅ Ключи созданы и сохранены' : '✅ Ключи созданы до перезагрузки страницы');
+            } catch (err) {
+                error.textContent = 'Ошибка генерации ключей: ' + err.message;
+                error.style.display = 'block';
+            } finally {
+                applyBtn.disabled = false;
+                tempBtn.disabled = false;
+                applyBtn.textContent = 'Создать ключи';
+            }
+        }
+
+        applyBtn.addEventListener('click', () => applySeed(saveCheckbox.checked));
+        tempBtn.addEventListener('click', () => applySeed(false));
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                applySeed(saveCheckbox.checked);
+            }
+        });
+    }
+
+    // ============================================================
+    // Custom key modals
+    // ============================================================
+
+    function showAddCustomKeyModal() {
+        const { overlay, modal } = createModal({
+            title: '➕ Пользовательский ключ',
+            bodyHtml: `
+                <p>
+                    Добавь свой ключ в формате <b>64 hex-символа</b>. Он будет сохранён в Tampermonkey
+                    и появится в списке ключей.
+                </p>
+
+                <input class="vk-p2p-input" id="vk-p2p-custom-name"
+                    placeholder="Имя ключа, например friend1">
+
+                <div style="height:8px"></div>
+
+                <textarea class="vk-p2p-textarea" id="vk-p2p-custom-key"
+                    placeholder="64 hex-символа"></textarea>
+
+                <p class="vk-p2p-error" id="vk-p2p-custom-error"></p>
+            `,
+            actionsHtml: `
+                <button class="vk-p2p-btn vk-p2p-btn-secondary" id="vk-p2p-custom-cancel">Отмена</button>
+                <button class="vk-p2p-btn vk-p2p-btn-primary" id="vk-p2p-custom-save">Сохранить</button>
+            `
+        });
+
+        const nameInput = modal.querySelector('#vk-p2p-custom-name');
+        const keyInput = modal.querySelector('#vk-p2p-custom-key');
+        const error = modal.querySelector('#vk-p2p-custom-error');
+
+        setTimeout(() => nameInput.focus(), 80);
+
+        modal.querySelector('#vk-p2p-custom-cancel').addEventListener('click', () => overlay.remove());
+
+        modal.querySelector('#vk-p2p-custom-save').addEventListener('click', () => {
+            let name = nameInput.value.trim();
+            const keyHex = keyInput.value.trim().toLowerCase();
+
+            if (!name) {
+                error.textContent = 'Введите имя ключа.';
+                error.style.display = 'block';
+                return;
+            }
+
+            name = name.replace(/\s+/g, '_');
+
+            if (['k1', 'k2', 'k3', 'k4', '@temp'].includes(name)) {
+                error.textContent = 'Это имя зарезервировано. Используй другое.';
+                error.style.display = 'block';
+                return;
+            }
+
+            if (!/^[a-zA-Z0-9_.@-]{1,32}$/.test(name)) {
+                error.textContent = 'Имя может содержать буквы, цифры, _, -, . и @. До 32 символов.';
+                error.style.display = 'block';
+                return;
+            }
+
+            if (!isValidKeyHex(keyHex)) {
+                error.textContent = 'Ключ должен быть ровно 64 hex-символа.';
+                error.style.display = 'block';
+                return;
+            }
+
+            CUSTOM_KEYS[name] = keyHex;
+            saveCustomKeys();
+            currentKeySlot = name;
+
+            overlay.remove();
+            updateEncryptButtonsTitle();
+            scan();
+
+            showToast(`✅ Ключ ${name} сохранён`);
+        });
+    }
+
+    async function generateTempKey() {
+        const bytes = crypto.getRandomValues(new Uint8Array(32));
+        const keyHex = bytesToHex(bytes);
+
+        TEMP_KEY = keyHex;
+        currentKeySlot = '@temp';
+
+        updateEncryptButtonsTitle();
+        scan();
+
+        try {
+            await navigator.clipboard.writeText(keyHex);
+            showToast('✅ Временный ключ создан и скопирован');
+        } catch {
+            showGeneratedKeyModal(keyHex);
+        }
+    }
+
+    function showGeneratedKeyModal(keyHex) {
+        const { overlay, modal } = createModal({
+            title: '⚡ Новый временный ключ',
+            bodyHtml: `
+                <p>
+                    Ключ создан и применён. Скопируй его и передай собеседнику.
+                    Он исчезнет при перезагрузке страницы.
+                </p>
+
+                <textarea class="vk-p2p-textarea" id="vk-p2p-generated-key" readonly>${keyHex}</textarea>
+            `,
+            actionsHtml: `
+                <button class="vk-p2p-btn vk-p2p-btn-secondary" id="vk-p2p-generated-close">Закрыть</button>
+                <button class="vk-p2p-btn vk-p2p-btn-primary" id="vk-p2p-generated-copy">Скопировать</button>
+            `
+        });
+
+        const output = modal.querySelector('#vk-p2p-generated-key');
+
+        setTimeout(() => {
+            output.focus();
+            output.select();
+        }, 80);
+
+        modal.querySelector('#vk-p2p-generated-close').addEventListener('click', () => overlay.remove());
+
+        modal.querySelector('#vk-p2p-generated-copy').addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(keyHex);
+                overlay.remove();
+                showToast('✅ Ключ скопирован');
+            } catch {
+                output.focus();
+                output.select();
+            }
+        });
+    }
+
+    function showSeedChangeModal() {
+        const { overlay, modal } = createModal({
+            title: '🔄 Сменить seed-фразу',
+            bodyHtml: `
+                <p>
+                    Будут заново созданы ключи <b>k1–k4</b>. Старые сохранённые k1–k4 будут заменены.
+                    Пользовательские ключи не удаляются.
+                </p>
+
+                <div class="vk-p2p-row">
+                    <input class="vk-p2p-input" id="vk-p2p-change-seed-input" type="password"
+                        placeholder="Новая секретная фраза">
+                    <button class="vk-p2p-btn vk-p2p-btn-secondary vk-p2p-eye-btn" id="vk-p2p-change-seed-eye" type="button">👁️</button>
+                </div>
+
+                <label class="vk-p2p-check">
+                    <input id="vk-p2p-change-save" type="checkbox" checked>
+                    <span>Сохранить производные ключи на этом устройстве</span>
+                </label>
+
+                <p class="vk-p2p-error" id="vk-p2p-change-seed-error"></p>
+            `,
+            actionsHtml: `
+                <button class="vk-p2p-btn vk-p2p-btn-secondary" id="vk-p2p-change-cancel">Отмена</button>
+                <button class="vk-p2p-btn vk-p2p-btn-primary" id="vk-p2p-change-apply">Сменить</button>
+            `
+        });
+
+        const input = modal.querySelector('#vk-p2p-change-seed-input');
+        const eyeBtn = modal.querySelector('#vk-p2p-change-seed-eye');
+        const error = modal.querySelector('#vk-p2p-change-seed-error');
+        const saveCheckbox = modal.querySelector('#vk-p2p-change-save');
+        const applyBtn = modal.querySelector('#vk-p2p-change-apply');
+
+        attachPasswordEye(input, eyeBtn);
+
+        setTimeout(() => input.focus(), 80);
+
+        modal.querySelector('#vk-p2p-change-cancel').addEventListener('click', () => overlay.remove());
+
+        async function apply() {
+            const seed = input.value.trim();
+
+            if (seed.length < 6) {
+                error.textContent = 'Слишком коротко. Лучше минимум 12 символов или несколько слов.';
+                error.style.display = 'block';
+                return;
+            }
+
+            applyBtn.disabled = true;
+            applyBtn.textContent = 'Создаю...';
+
+            try {
+                const keys = await deriveKeyMaterialFromSeed(seed);
+                DERIVED_KEYS = keys;
+                currentKeySlot = DEFAULT_KEY_SLOT;
+
+                if (saveCheckbox.checked) {
+                    saveDerivedKeys(keys);
+                } else {
+                    clearDerivedKeys();
+                    DERIVED_KEYS = keys;
+                }
+
+                settings.saveDerivedKeys = Boolean(saveCheckbox.checked);
+                saveSettings();
+
+                overlay.remove();
+                updateEncryptButtonsTitle();
+                scan();
+
+                showToast('✅ Seed-фраза сменена');
+            } catch (err) {
+                error.textContent = 'Ошибка: ' + err.message;
+                error.style.display = 'block';
+            } finally {
+                applyBtn.disabled = false;
+                applyBtn.textContent = 'Сменить';
+            }
+        }
+
+        applyBtn.addEventListener('click', apply);
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                apply();
+            }
+        });
+    }
+
+    // ============================================================
+    // Incoming decrypt
+    // ============================================================
+
     function createToggleInterface(originalEnc, decryptedText, parentEl) {
         parentEl.innerHTML = '';
 
@@ -116,51 +1083,52 @@
         textSpan.style.fontWeight = 'normal';
 
         const toggleLink = document.createElement('a');
-        toggleLink.href = "#";
+        toggleLink.href = '#';
         toggleLink.className = 'vk-dec-toggle';
         toggleLink.textContent = '[шифр]';
         toggleLink.title = 'Показать зашифрованный оригинал';
-        toggleLink.style.cssText = `
-            display:inline-block; margin-left:8px; font-size:11px;
-            text-decoration:underline; cursor:pointer; opacity:0.6;
-            user-select:none; color:inherit;
-        `;
 
-        toggleLink.onclick = (e) => {
+        toggleLink.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
+
             if (toggleLink.textContent === '[шифр]') {
                 textSpan.textContent = originalEnc;
-                textSpan.style.fontFamily = 'monospace';
+                textSpan.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
                 toggleLink.textContent = '[текст]';
             } else {
                 textSpan.textContent = decryptedText;
                 textSpan.style.fontFamily = '';
                 toggleLink.textContent = '[шифр]';
             }
-        };
+        });
 
         parentEl.appendChild(textSpan);
         parentEl.appendChild(document.createTextNode(' '));
         parentEl.appendChild(toggleLink);
+
         parentEl.dataset.vkdecDone = 'true';
     }
 
-    // --- Обработка входящих ---
     async function processIncomingMessage(msgEl) {
+        if (!settings.decryptIncoming) return;
+        if (!hasAnyKeys()) return;
         if (msgEl.dataset.vkdecDone) return;
 
-        const text = msgEl.textContent?.trim() || "";
+        const text = msgEl.textContent?.trim() || '';
+
         if (!text.startsWith(PREFIX) || !text.endsWith(SUFFIX)) return;
 
         const inner = text.slice(PREFIX.length, -SUFFIX.length);
         const colon = inner.indexOf(':');
+
         if (colon === -1) return;
 
         const keyId = inner.slice(0, colon);
-        const payload = inner.slice(colon + 1);
-        const keys = getAllKeys();
-        const keyHex = keys[keyId];
+        const rawPayload = inner.slice(colon + 1);
+        const payload = decodeEmojiToBase64(rawPayload);
+
+        const keyHex = getAllKeys()[keyId];
 
         if (!keyHex) {
             console.warn(`🔑 Ключ "${keyId}" не найден`);
@@ -171,442 +1139,352 @@
             const decrypted = await decryptAESGCM(payload, keyHex);
             createToggleInterface(text, decrypted, msgEl);
         } catch (err) {
-            console.error('❌ Ошибка расшифровки:', err.message);
-            msgEl.textContent = `[❌ ${err.message}]`;
+            console.error('❌ Ошибка расшифровки:', err);
+            msgEl.textContent = `[❌ Ошибка расшифровки: ${err.message}]`;
             msgEl.dataset.vkdecDone = 'true';
         }
     }
 
-    // --- UI: Ввод временного ключа ---
-    function showTempKeyInput() {
-        const overlay = document.createElement('div');
-        overlay.style.cssText = `
-            position:fixed; top:0; left:0; width:100%; height:100%;
-            background:rgba(0,0,0,0.7); z-index:99999;
-            display:flex; align-items:center; justify-content:center;
-        `;
+    // ============================================================
+    // Composer helpers
+    // ============================================================
 
-        const modal = document.createElement('div');
-        modal.style.cssText = `
-            background:#fff; color:#000; padding:20px; border-radius:12px;
-            max-width:90vw; width:400px; box-shadow:0 4px 20px rgba(0,0,0,0.3);
-        `;
+    function getComposerInput() {
+        const selectors = [
+            '.ComposerInput__input.ConvoComposer__input[contenteditable="true"]',
+            '.ConvoComposer__input[contenteditable="true"]',
+            '.im-editable[contenteditable="true"]',
+            '[contenteditable="true"][role="textbox"]',
+            '[contenteditable="true"]'
+        ];
 
-        modal.innerHTML = `
-            <h3 style="margin:0 0 16px;font-size:16px">🔑 Временный ключ</h3>
-            <p style="margin:0 0 12px;font-size:13px;opacity:0.8">
-                Ключ хранится только в памяти и исчезнет при обновлении страницы.
-            </p>
-            <input type="text" id="vk-temp-key-input" placeholder="64 hex-символа (256 бит)"
-                style="width:100%;padding:10px;font-family:monospace;font-size:13px;margin-bottom:12px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box">
-            <div style="display:flex;gap:8px;justify-content:flex-end">
-                <button id="vk-temp-key-cancel" style="padding:8px 16px;border:none;background:#f0f0f0;border-radius:6px;cursor:pointer">Отмена</button>
-                <button id="vk-temp-key-save" style="padding:8px 16px;border:none;background:#0077FF;color:#fff;border-radius:6px;cursor:pointer">Применить</button>
-            </div>
-            <p id="vk-temp-key-error" style="color:#c00;font-size:12px;margin:8px 0 0;display:none"></p>
-        `;
+        for (const selector of selectors) {
+            const list = Array.from(document.querySelectorAll(selector));
+            const visible = list.find(el => {
+                const rect = el.getBoundingClientRect();
+                return rect.width > 20 && rect.height > 10;
+            });
 
-        overlay.appendChild(modal);
-        document.body.appendChild(overlay);
-
-        const input = document.getElementById('vk-temp-key-input');
-        const error = document.getElementById('vk-temp-key-error');
-
-        setTimeout(() => input.focus(), 100);
-
-        overlay.onclick = (e) => {
-            if (e.target === overlay) hideModal();
-        };
-
-        document.getElementById('vk-temp-key-cancel').onclick = hideModal;
-
-        document.getElementById('vk-temp-key-save').onclick = () => {
-            const val = input.value.trim().toLowerCase();
-
-            if (!/^[0-9a-f]{64}$/.test(val)) {
-                error.textContent = 'Ключ должен быть ровно 64 hex-символа';
-                error.style.display = 'block';
-                return;
-            }
-
-            TEMP_KEY = val;
-            currentKeySlot = "@temp";
-
-            hideModal();
-            scan();
-
-            showToast('✅ Временный ключ применён');
-        };
-
-        input.onkeypress = (e) => {
-            if (e.key === 'Enter') document.getElementById('vk-temp-key-save').click();
-        };
-
-        function hideModal() {
-            overlay.remove();
+            if (visible) return visible;
         }
 
-        const style = document.createElement('style');
-        style.textContent = `@keyframes fadeout { to { opacity:0; transform:translate(-50%, 10px); } }`;
-        document.head.appendChild(style);
+        return null;
     }
 
-    // --- Генерация нового временного ключа ---
-    async function generateTempKey() {
-        const bytes = crypto.getRandomValues(new Uint8Array(32));
-        const keyHex = Array.from(bytes)
-            .map(byte => byte.toString(16).padStart(2, '0'))
-            .join('');
+    function getComposerPanel(inputEl) {
+        if (!inputEl) return null;
 
-        TEMP_KEY = keyHex;
-        currentKeySlot = '@temp';
-        updateEncryptButtonsTitle();
-        scan();
+        return inputEl.closest(
+            '.ConvoComposer__inputPanel, .ConvoComposer, .im-compose, .im-chat-input, form'
+        );
+    }
+
+    function findSendButton(panel) {
+        const root = panel || document;
+
+        const selectors = [
+            '.ConvoComposer__buttonIcon--submit',
+            'button[aria-label*="Отправить"]',
+            '[aria-label*="Отправить"]',
+            'button[type="submit"]',
+            '.im-send-btn',
+            '.ConvoComposer__button:last-child'
+        ];
+
+        for (const selector of selectors) {
+            const found = root.querySelector(selector);
+            if (!found) continue;
+
+            const button = found.closest('button, [role="button"], a, div') || found;
+            const rect = button.getBoundingClientRect();
+
+            if (rect.width > 0 && rect.height > 0) {
+                return button;
+            }
+        }
+
+        const icon = root.querySelector('svg.vkuiIcon--send_24, .vkuiIcon--send_24');
+        if (icon) {
+            return icon.closest('button, [role="button"], a, div') || icon;
+        }
+
+        return null;
+    }
+
+    function getInputPlainText(inputEl) {
+        if (!inputEl) return '';
+
+        if ('value' in inputEl) {
+            return inputEl.value.trim();
+        }
+
+        return inputEl.innerText.trim();
+    }
+
+    function setInputPlainText(inputEl, text) {
+        if (!inputEl) return;
+
+        inputEl.focus();
+
+        if ('value' in inputEl) {
+            inputEl.value = text;
+        } else {
+            inputEl.innerText = text;
+
+            const range = document.createRange();
+            const sel = window.getSelection();
+
+            range.selectNodeContents(inputEl);
+            range.collapse(false);
+
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }
+
+        inputEl.dispatchEvent(new InputEvent('input', {
+            bubbles: true,
+            inputType: 'insertText',
+            data: text
+        }));
+
+        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    async function encryptCurrentInput({ showErrors = true } = {}) {
+        if (!hasAnyKeys()) {
+            showSeedSetupModal();
+            return false;
+        }
+
+        const inputEl = getComposerInput();
+
+        if (!inputEl) {
+            if (showErrors) showToast('❌ Не нашёл поле ввода');
+            return false;
+        }
+
+        const plainText = getInputPlainText(inputEl);
+
+        if (!plainText) return false;
+
+        if (plainText.startsWith(PREFIX) && plainText.endsWith(SUFFIX)) {
+            return true;
+        }
+
+        const keyHex = getCurrentKeyHex();
+
+        if (!keyHex) {
+            if (showErrors) showToast(`❌ Ключ "${currentKeySlot}" не найден`);
+            return false;
+        }
 
         try {
-            await navigator.clipboard.writeText(keyHex);
-            showToast('✅ Новый ключ создан и скопирован');
+            const b64 = await encryptAESGCM(plainText, keyHex);
+            const payload = settings.emojiCipher ? encodeBase64ToEmoji(b64) : b64;
+            const encryptedMsg = `${PREFIX}${currentKeySlot}:${payload}${SUFFIX}`;
+
+            setInputPlainText(inputEl, encryptedMsg);
+            lastEncryptedAt = Date.now();
+
+            return true;
         } catch (err) {
-            console.warn('Не удалось скопировать ключ:', err.message);
-            showGeneratedKeyModal(keyHex);
+            console.error('❌ Ошибка шифрования:', err);
+            if (showErrors) showToast('❌ Не удалось зашифровать: ' + err.message);
+            return false;
         }
     }
 
-    function showToast(text) {
-        const toast = document.createElement('div');
-        toast.textContent = text;
-        toast.style.cssText = `
-            position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
-            background:#2d3b45; color:#fff; padding:10px 16px; border-radius:8px;
-            font-size:13px; z-index:100000; animation:fadeout 2s forwards;
-        `;
-        document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 2000);
-    }
+    async function autoEncryptAndSend(event) {
+        if (!settings.autoEncrypt) return;
+        if (isAutoSending) return;
 
-    function showGeneratedKeyModal(keyHex) {
-        const overlay = document.createElement('div');
-        overlay.style.cssText = `
-            position:fixed; top:0; left:0; width:100%; height:100%;
-            background:rgba(0,0,0,0.7); z-index:99999;
-            display:flex; align-items:center; justify-content:center;
-        `;
-
-        const modal = document.createElement('div');
-        modal.style.cssText = `
-            background:#fff; color:#000; padding:20px; border-radius:12px;
-            max-width:90vw; width:460px; box-shadow:0 4px 20px rgba(0,0,0,0.3);
-        `;
-
-        modal.innerHTML = `
-            <h3 style="margin:0 0 16px;font-size:16px">🔑 Новый временный ключ</h3>
-            <p style="margin:0 0 12px;font-size:13px;opacity:0.8">
-                Ключ создан и применён. Скопируйте его вручную и передайте собеседнику.
-            </p>
-            <textarea readonly id="vk-generated-key-output"
-                style="width:100%;height:84px;padding:10px;font-family:monospace;font-size:13px;margin-bottom:12px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box;resize:none">${keyHex}</textarea>
-            <div style="display:flex;gap:8px;justify-content:flex-end">
-                <button id="vk-generated-key-copy" style="padding:8px 16px;border:none;background:#0077FF;color:#fff;border-radius:6px;cursor:pointer">Скопировать</button>
-                <button id="vk-generated-key-close" style="padding:8px 16px;border:none;background:#f0f0f0;border-radius:6px;cursor:pointer">Закрыть</button>
-            </div>
-        `;
-
-        overlay.appendChild(modal);
-        document.body.appendChild(overlay);
-
-        const output = document.getElementById('vk-generated-key-output');
-        output.focus();
-        output.select();
-
-        overlay.onclick = (e) => {
-            if (e.target === overlay) overlay.remove();
-        };
-
-        document.getElementById('vk-generated-key-close').onclick = () => overlay.remove();
-        document.getElementById('vk-generated-key-copy').onclick = async () => {
-            try {
-                await navigator.clipboard.writeText(keyHex);
-                overlay.remove();
-                showToast('✅ Ключ скопирован');
-            } catch (err) {
-                output.focus();
-                output.select();
+        if (!hasAnyKeys()) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation?.();
             }
-        };
-    }
-
-    // --- UI: Выбор ключа рядом с кнопкой шифрования ---
-    function showKeyMenu(anchorBtn) {
-        const old = document.getElementById('vk-p2p-key-menu');
-        if (old) old.remove();
-
-        const menu = document.createElement('div');
-        menu.id = 'vk-p2p-key-menu';
-        menu.style.cssText = `
-            position:fixed;
-            z-index:100000;
-            background:#fff;
-            color:#000;
-            border:1px solid rgba(0,0,0,0.15);
-            border-radius:10px;
-            box-shadow:0 8px 24px rgba(0,0,0,0.22);
-            padding:6px;
-            min-width:150px;
-            font-size:13px;
-        `;
-
-        const rect = anchorBtn.getBoundingClientRect();
-        menu.style.left = `${rect.left}px`;
-        menu.style.top = `${rect.top - 8}px`;
-        menu.style.transform = 'translateY(-100%)';
-
-        const keys = getAllKeys();
-
-        Object.keys(keys).forEach(slotId => {
-            const item = document.createElement('button');
-            item.type = 'button';
-            item.textContent = slotId === '@temp'
-                ? `${slotId} временный`
-                : slotId;
-
-            item.style.cssText = `
-                display:block;
-                width:100%;
-                text-align:left;
-                padding:8px 10px;
-                border:none;
-                background:${slotId === currentKeySlot ? '#e8f1ff' : 'transparent'};
-                color:inherit;
-                border-radius:7px;
-                cursor:pointer;
-                font:inherit;
-            `;
-
-            item.onclick = () => {
-                currentKeySlot = slotId;
-                menu.remove();
-                updateEncryptButtonsTitle();
-            };
-
-            menu.appendChild(item);
-        });
-
-        const addBtn = document.createElement('button');
-        addBtn.type = 'button';
-        addBtn.textContent = '+ временный ключ';
-        addBtn.style.cssText = `
-            display:block;
-            width:100%;
-            text-align:left;
-            padding:8px 10px;
-            border:none;
-            background:transparent;
-            color:#0077ff;
-            border-radius:7px;
-            cursor:pointer;
-            font:inherit;
-            border-top:1px solid #eee;
-            margin-top:4px;
-        `;
-
-        addBtn.onclick = () => {
-            menu.remove();
-            showTempKeyInput();
-        };
-
-        menu.appendChild(addBtn);
-
-        const generateBtn = document.createElement('button');
-        generateBtn.type = 'button';
-        generateBtn.textContent = '⚡ сгенерировать новый ключ';
-        generateBtn.style.cssText = `
-            display:block;
-            width:100%;
-            text-align:left;
-            padding:8px 10px;
-            border:none;
-            background:transparent;
-            color:#0077ff;
-            border-radius:7px;
-            cursor:pointer;
-            font:inherit;
-        `;
-
-        generateBtn.onclick = () => {
-            menu.remove();
-            generateTempKey();
-        };
-
-        menu.appendChild(generateBtn);
-
-        if (TEMP_KEY) {
-            const clearBtn = document.createElement('button');
-            clearBtn.type = 'button';
-            clearBtn.textContent = 'удалить временный ключ';
-            clearBtn.style.cssText = `
-                display:block;
-                width:100%;
-                text-align:left;
-                padding:8px 10px;
-                border:none;
-                background:transparent;
-                color:#c00;
-                border-radius:7px;
-                cursor:pointer;
-                font:inherit;
-            `;
-
-            clearBtn.onclick = () => {
-                TEMP_KEY = null;
-                if (currentKeySlot === '@temp') currentKeySlot = DEFAULT_KEY_SLOT;
-                menu.remove();
-                updateEncryptButtonsTitle();
-                scan();
-            };
-
-            menu.appendChild(clearBtn);
+            showSeedSetupModal();
+            return;
         }
 
-        document.body.appendChild(menu);
+        const inputEl = getComposerInput();
+        if (!inputEl) return;
+
+        const plainText = getInputPlainText(inputEl);
+        if (!plainText) return;
+
+        if (plainText.startsWith(PREFIX) && plainText.endsWith(SUFFIX)) {
+            return;
+        }
+
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation?.();
+        }
+
+        const ok = await encryptCurrentInput({ showErrors: true });
+        if (!ok) return;
+
+        isAutoSending = true;
 
         setTimeout(() => {
-            document.addEventListener('click', closeMenuOnce, { once: true });
-        }, 0);
+            try {
+                const freshInput = getComposerInput();
+                const panel = getComposerPanel(freshInput);
+                const sendBtn = findSendButton(panel);
 
-        function closeMenuOnce(e) {
-            if (!menu.contains(e.target) && e.target !== anchorBtn) {
-                menu.remove();
+                if (sendBtn) {
+                    sendBtn.click();
+                } else {
+                    showToast('⚠️ Зашифровал, но не нашёл кнопку отправки');
+                }
+            } finally {
+                setTimeout(() => {
+                    isAutoSending = false;
+                }, 300);
             }
-        }
+        }, 120);
     }
+
+    function handleComposerKeydown(e) {
+        if (!settings.autoEncrypt) return;
+        if (e.key !== 'Enter') return;
+
+        // Shift+Enter оставляем для переноса строки.
+        if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+
+        autoEncryptAndSend(e);
+    }
+
+    function attachEnterHandler(inputEl) {
+        if (!inputEl || inputEl.dataset.vkP2PEnterAttached === 'true') return;
+
+        inputEl.dataset.vkP2PEnterAttached = 'true';
+        inputEl.addEventListener('keydown', handleComposerKeydown, true);
+    }
+
+    function attachSendButtonHandler(sendBtn) {
+        if (!sendBtn || sendBtn.dataset.vkP2PSendAttached === 'true') return;
+
+        sendBtn.dataset.vkP2PSendAttached = 'true';
+
+        sendBtn.addEventListener('click', (e) => {
+            if (!settings.autoEncrypt) return;
+            if (isAutoSending) return;
+
+            const now = Date.now();
+
+            // Если только что зашифровали вручную, не мешаем отправке.
+            if (now - lastEncryptedAt < 250) return;
+
+            autoEncryptAndSend(e);
+        }, true);
+    }
+
+    // ============================================================
+    // Composer controls
+    // ============================================================
 
     function updateEncryptButtonsTitle() {
         const encBtn = document.getElementById('vk-p2p-enc-btn');
         const keyBtn = document.getElementById('vk-p2p-key-btn');
+        const hasKeys = hasAnyKeys();
 
         if (encBtn) {
-            encBtn.title = `Зашифровать отправленное сообщение (ключ: ${currentKeySlot})`;
+            encBtn.title = hasKeys
+                ? `Зашифровать сообщение. Ключ: ${currentKeySlot}`
+                : 'Настроить ключи VKEncrypt';
+
+            encBtn.textContent = hasKeys ? '🔒' : '🔐';
+            encBtn.style.opacity = hasKeys ? '0.58' : '0.35';
+            encBtn.style.display = settings.autoEncrypt && hasKeys ? 'none' : '';
         }
 
         if (keyBtn) {
-            keyBtn.title = `Сменить ключ. Сейчас: ${currentKeySlot}`;
-            keyBtn.textContent = currentKeySlot === '@temp' ? '⚡' : '🔑';
+            keyBtn.title = hasKeys
+                ? `Настройки VKEncrypt. Сейчас: ${currentKeySlot}`
+                : 'Настроить VKEncrypt';
+
+            keyBtn.textContent = !hasKeys
+                ? '⚙️'
+                : currentKeySlot === '@temp'
+                    ? '⚡'
+                    : settings.autoEncrypt
+                        ? '🟢'
+                        : '🔑';
         }
     }
 
-    function addKeySelector() {
-        const old = document.getElementById('vk-p2p-key-select');
-        if (old) old.remove();
-    }
-
-    // --- UI: Кнопка шифрования + кнопка смены ключа ---
     function addEncryptButton() {
-        if (document.getElementById('vk-p2p-enc-btn')) return;
-
-        const inputSelectors = [
-            '.ComposerInput__input.ConvoComposer__input',
-            '.im-editable',
-            '[contenteditable="true"]'
-        ];
-
-        const inputEl = inputSelectors.map(s => document.querySelector(s)).find(el => el);
+        const inputEl = getComposerInput();
         if (!inputEl) return;
 
-        const panel = inputEl.closest('.ConvoComposer__inputPanel, .im-compose');
+        attachEnterHandler(inputEl);
+
+        const panel = getComposerPanel(inputEl);
         if (!panel) return;
+
+        const sendBtn = findSendButton(panel);
+        if (sendBtn) attachSendButtonHandler(sendBtn);
+
+        if (document.getElementById('vk-p2p-enc-controls')) {
+            updateEncryptButtonsTitle();
+            return;
+        }
 
         const wrapper = document.createElement('span');
         wrapper.id = 'vk-p2p-enc-controls';
-        wrapper.style.cssText = `
-            display:inline-flex;
-            align-items:center;
-            gap:2px;
-            margin-right:4px;
-        `;
+        wrapper.className = 'vk-p2p-controls';
 
-        const btn = document.createElement('button');
-        btn.id = 'vk-p2p-enc-btn';
-        btn.innerHTML = '🔒';
-        btn.title = `Зашифровать отправленное сообщение (ключ: ${currentKeySlot})`;
-        btn.type = 'button';
-        btn.style.cssText = `
-            background:transparent; border:none; cursor:pointer; padding:8px 4px 8px 8px;
-            font-size:18px; opacity:0.55; transition:opacity 0.2s;
-            color:inherit;
-        `;
+        const encBtn = document.createElement('button');
+        encBtn.id = 'vk-p2p-enc-btn';
+        encBtn.className = 'vk-p2p-icon-btn vk-p2p-icon-btn-main';
+        encBtn.type = 'button';
+        encBtn.textContent = '🔒';
 
         const keyBtn = document.createElement('button');
         keyBtn.id = 'vk-p2p-key-btn';
-        keyBtn.textContent = currentKeySlot === '@temp' ? '⚡' : '🔑';
-        keyBtn.title = `Сменить ключ. Сейчас: ${currentKeySlot}`;
+        keyBtn.className = 'vk-p2p-icon-btn vk-p2p-icon-btn-small';
         keyBtn.type = 'button';
-        keyBtn.style.cssText = `
-            background:transparent; border:none; cursor:pointer; padding:8px 8px 8px 2px;
-            font-size:15px; opacity:0.55; transition:opacity 0.2s;
-            color:inherit;
-        `;
 
-        [btn, keyBtn].forEach(b => {
-            b.onmouseenter = () => b.style.opacity = '1';
-            b.onmouseleave = () => b.style.opacity = '0.55';
-        });
-
-        keyBtn.onclick = (e) => {
+        encBtn.addEventListener('click', async (e) => {
             e.preventDefault();
             e.stopPropagation();
-            showKeyMenu(keyBtn);
-        };
 
-        btn.onclick = async () => {
-            const plainText = inputEl.innerText.trim();
-            if (!plainText) return;
-
-            const keys = getAllKeys();
-            const keyHex = keys[currentKeySlot];
-
-            if (!keyHex) {
-                alert(`Ключ "${currentKeySlot}" не найден`);
+            if (!hasAnyKeys()) {
+                showSeedSetupModal();
                 return;
             }
 
-            btn.disabled = true;
-            btn.style.opacity = '0.3';
-            btn.textContent = '⏳';
+            encBtn.disabled = true;
+            encBtn.textContent = '⏳';
 
             try {
-                const b64 = await encryptAESGCM(plainText, keyHex);
-                const encryptedMsg = `${PREFIX}${currentKeySlot}:${b64}${SUFFIX}`;
-
-                inputEl.innerText = encryptedMsg;
-                inputEl.focus();
-
-                const range = document.createRange();
-                const sel = window.getSelection();
-                range.selectNodeContents(inputEl);
-                range.collapse(false);
-                sel.removeAllRanges();
-                sel.addRange(range);
-
-                inputEl.dispatchEvent(new InputEvent('input', {
-                    bubbles: true,
-                    inputType: 'insertText',
-                    data: encryptedMsg
-                }));
-            } catch (err) {
-                console.error('❌ Ошибка шифрования:', err);
-                alert('Не удалось зашифровать: ' + err.message);
+                const ok = await encryptCurrentInput({ showErrors: true });
+                if (ok) showToast('✅ Сообщение зашифровано');
             } finally {
-                btn.disabled = false;
-                btn.style.opacity = '0.55';
-                btn.textContent = '🔒';
+                encBtn.disabled = false;
+                encBtn.textContent = '🔒';
                 updateEncryptButtonsTitle();
             }
-        };
+        });
 
-        wrapper.appendChild(btn);
+        keyBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            if (!hasAnyKeys()) {
+                showSeedSetupModal();
+                return;
+            }
+
+            showMainMenu(keyBtn);
+        });
+
+        wrapper.appendChild(encBtn);
         wrapper.appendChild(keyBtn);
-
-        const sendBtn = panel.querySelector('.ConvoComposer__button:last-child, [aria-label*="Отправить"]');
 
         if (sendBtn?.parentNode) {
             sendBtn.parentNode.insertBefore(wrapper, sendBtn);
@@ -617,20 +1495,218 @@
         updateEncryptButtonsTitle();
     }
 
-    // --- Главный цикл ---
+    function showMainMenu(anchorBtn) {
+        closeMenus();
+
+        const menu = document.createElement('div');
+        menu.className = 'vk-p2p-menu';
+
+        const rect = anchorBtn.getBoundingClientRect();
+        menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 260))}px`;
+        menu.style.top = `${Math.max(8, rect.top - 8)}px`;
+        menu.style.transform = 'translateY(-100%)';
+
+        const title = document.createElement('div');
+        title.className = 'vk-p2p-menu-title';
+        title.textContent = `${APP_NAME} v${APP_VERSION}`;
+        menu.appendChild(title);
+
+        const allKeys = getAllKeys();
+        const keyNames = Object.keys(allKeys);
+
+        if (keyNames.length) {
+            const keyTitle = document.createElement('div');
+            keyTitle.className = 'vk-p2p-menu-title';
+            keyTitle.textContent = 'Ключ шифрования';
+            menu.appendChild(keyTitle);
+
+            keyNames.forEach(slotId => {
+                const item = document.createElement('button');
+                item.type = 'button';
+                item.className = 'vk-p2p-menu-item';
+
+                if (slotId === currentKeySlot) {
+                    item.classList.add('vk-p2p-menu-item-active');
+                }
+
+                item.textContent = slotId === '@temp'
+                    ? '⚡ @temp — временный'
+                    : `🔑 ${slotId}`;
+
+                item.addEventListener('click', () => {
+                    currentKeySlot = slotId;
+                    closeMenus();
+                    updateEncryptButtonsTitle();
+                    showToast(`✅ Выбран ключ: ${slotId}`);
+                });
+
+                menu.appendChild(item);
+            });
+        }
+
+        addMenuSeparator(menu);
+
+        addMenuItem(menu, settings.autoEncrypt ? '🟢 Автошифрование: включено' : '⚪ Автошифрование: выключено', () => {
+            settings.autoEncrypt = !settings.autoEncrypt;
+            saveSettings();
+            closeMenus();
+            updateEncryptButtonsTitle();
+            scan();
+            showToast(settings.autoEncrypt ? '✅ Автошифрование включено' : '⏸️ Автошифрование выключено');
+        });
+
+        addMenuItem(menu, settings.emojiCipher ? '😀 Emoji-шифротекст: включён' : '🔤 Emoji-шифротекст: выключен', () => {
+            settings.emojiCipher = !settings.emojiCipher;
+            saveSettings();
+            closeMenus();
+            showToast(settings.emojiCipher ? '✅ Новые сообщения будут в emoji' : '✅ Новые сообщения будут в Base64');
+        });
+
+        addMenuItem(menu, settings.decryptIncoming ? '👁️ Расшифровка входящих: включена' : '🙈 Расшифровка входящих: выключена', () => {
+            settings.decryptIncoming = !settings.decryptIncoming;
+            saveSettings();
+            closeMenus();
+            showToast(settings.decryptIncoming ? '✅ Расшифровка включена' : '⏸️ Расшифровка выключена');
+            scan();
+        });
+
+        addMenuSeparator(menu);
+
+        addMenuItem(menu, '➕ Добавить пользовательский ключ', () => {
+            closeMenus();
+            showAddCustomKeyModal();
+        });
+
+        addMenuItem(menu, '⚡ Сгенерировать временный ключ', () => {
+            closeMenus();
+            generateTempKey();
+        });
+
+        addMenuItem(menu, '🔄 Сменить seed-фразу k1–k4', () => {
+            closeMenus();
+            showSeedChangeModal();
+        });
+
+        if (TEMP_KEY) {
+            addMenuItem(menu, '🧹 Удалить временный ключ', () => {
+                TEMP_KEY = null;
+                if (currentKeySlot === '@temp') currentKeySlot = DEFAULT_KEY_SLOT;
+                closeMenus();
+                updateEncryptButtonsTitle();
+                showToast('✅ Временный ключ удалён');
+            });
+        }
+
+        const customKeyNames = Object.keys(CUSTOM_KEYS);
+        if (customKeyNames.length) {
+            addMenuSeparator(menu);
+
+            customKeyNames.forEach(name => {
+                addMenuItem(menu, `🗑️ Удалить ключ ${name}`, () => {
+                    if (!confirm(`Удалить пользовательский ключ "${name}"?`)) return;
+
+                    delete CUSTOM_KEYS[name];
+                    saveCustomKeys();
+
+                    if (currentKeySlot === name) currentKeySlot = DEFAULT_KEY_SLOT;
+
+                    closeMenus();
+                    updateEncryptButtonsTitle();
+                    showToast(`✅ Ключ ${name} удалён`);
+                }, true);
+            });
+        }
+
+        addMenuSeparator(menu);
+
+        addMenuItem(menu, '🧨 Сбросить все сохранённые ключи', () => {
+            if (!confirm('Удалить сохранённые k1–k4 и все пользовательские ключи?')) return;
+
+            closeMenus();
+            resetAllKeys();
+            showToast('✅ Сохранённые ключи сброшены');
+        }, true);
+
+        document.body.appendChild(menu);
+
+        setTimeout(() => {
+            document.addEventListener('click', function closeOnce(e) {
+                if (!menu.contains(e.target) && e.target !== anchorBtn) {
+                    menu.remove();
+                }
+            }, { once: true });
+        }, 0);
+    }
+
+    function addMenuItem(menu, text, onClick, danger = false) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'vk-p2p-menu-item';
+
+        if (danger) item.classList.add('vk-p2p-menu-danger');
+
+        item.textContent = text;
+        item.addEventListener('click', onClick);
+
+        menu.appendChild(item);
+        return item;
+    }
+
+    function addMenuSeparator(menu) {
+        const sep = document.createElement('div');
+        sep.className = 'vk-p2p-menu-sep';
+        menu.appendChild(sep);
+    }
+
+    // ============================================================
+    // Scan loop
+    // ============================================================
+
     function scan() {
-        document.querySelectorAll('.ConvoMessage__text, .MessageText, .im_msg_text, .im-message--text')
-            .forEach(el => processIncomingMessage(el));
-        addKeySelector();
+        injectStyles();
+
+        document.querySelectorAll(
+            '.ConvoMessage__text, .MessageText, .im_msg_text, .im-message--text'
+        ).forEach(el => processIncomingMessage(el));
+
         addEncryptButton();
     }
 
-    console.log('🔐 VK P2P Encrypt v3.3 loaded');
-    console.log('📦 Статические ключи:', Object.keys(STATIC_KEYS).join(', '));
-    console.log('⚡ Временный ключ:', TEMP_KEY ? '✅' : '❌');
+    function init() {
+        injectStyles();
 
-    setTimeout(scan, 1000);
-    const obs = new MutationObserver(scan);
-    obs.observe(document.body, { childList: true, subtree: true });
+        loadSettings();
+        loadCustomKeys();
+
+        DERIVED_KEYS = loadDerivedKeys();
+
+        if (!DERIVED_KEYS && Object.keys(CUSTOM_KEYS).length) {
+            currentKeySlot = Object.keys(CUSTOM_KEYS)[0];
+        }
+
+        console.log(`🔐 ${APP_NAME} v${APP_VERSION} loaded`);
+        console.log('🔑 Derived keys:', DERIVED_KEYS ? 'yes' : 'no');
+        console.log('🔑 Custom keys:', Object.keys(CUSTOM_KEYS).join(', ') || 'none');
+        console.log('⚡ Temp key:', TEMP_KEY ? 'yes' : 'no');
+
+        setTimeout(scan, 700);
+
+        const observer = new MutationObserver(() => {
+            scan();
+        });
+
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeMenus();
+            }
+        }, true);
+    }
+
+    init();
 
 })();

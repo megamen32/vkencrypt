@@ -13,6 +13,7 @@ venv/
 .env
 bot/.env
 bot/vkencrypt.service
+bot/keys.json
 extension/dist/
 vkencrypt_userscript_*.js
 
