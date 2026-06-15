@@ -26,3 +26,9 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Node / Playwright
+node_modules/
+test-results/
+playwright-report/
+.playwright/
