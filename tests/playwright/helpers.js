@@ -20,6 +20,20 @@ const GM_STUBS = `
     })();
 `;
 
+function buildSeedStoreScript(seedEntries) {
+    if (!seedEntries || !Object.keys(seedEntries).length) {
+        return '';
+    }
+
+    return `
+        (() => {
+            for (const [key, value] of Object.entries(${JSON.stringify(seedEntries)})) {
+                window.__gmStore.set(key, value);
+            }
+        })();
+    `;
+}
+
 // Синхронный setTimeout: скрипт планирует setTimeout(scan, 700) и
 // setTimeout(() => input.focus(), 80). В Playwright MutationObserver-цикл
 // в async-режиме иногда рвёт страницу; sync-режим стабилен и сканер
@@ -95,10 +109,10 @@ const MODERN_WEB_VK_BODY = `
 // стабы GM_*, форсит sync setTimeout, инжектит userscript через
 // page.evaluate (после полной загрузки страницы, когда document.body
 // уже существует и MutationObserver привязывается корректно).
-async function openMockChat(page, { body = MOCK_BODY, css = MOCK_CSS } = {}) {
-    await page.goto('about:blank');
+async function openMockChat(page, { body = MOCK_BODY, css = MOCK_CSS, gmSeed = null, url = 'about:blank' } = {}) {
+    await page.goto(url);
     await page.evaluate(
-        ({ body, css, gmStubs, syncStub, code }) => {
+        ({ body, css, gmStubs, syncStub, seedScript, code }) => {
             const style = document.createElement('style');
             style.textContent = css;
             document.head.appendChild(style);
@@ -107,6 +121,10 @@ async function openMockChat(page, { body = MOCK_BODY, css = MOCK_CSS } = {}) {
 
             // Стабы GM_*.
             (new Function(gmStubs))();
+
+            if (seedScript) {
+                (new Function(seedScript))();
+            }
 
             // Sync setTimeout — иначе MutationObserver-цикл в async-режиме
             // иногда рвёт страницу, и тесты падают.
@@ -120,6 +138,7 @@ async function openMockChat(page, { body = MOCK_BODY, css = MOCK_CSS } = {}) {
             css,
             gmStubs: GM_STUBS,
             syncStub: SYNC_STUB,
+            seedScript: buildSeedStoreScript(gmSeed),
             code: loadUserscriptCode(),
         }
     );
@@ -163,6 +182,7 @@ module.exports = {
     GM_STUBS,
     openMockChat,
     openModernWebVkChat,
+    buildSeedStoreScript,
     setupUserscript,
     makePlaintextHelper,
 };
