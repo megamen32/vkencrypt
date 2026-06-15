@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK P2P AES-GCM
 // @namespace    local
-// @version      4.0
+// @version      4.1
 // @description  P2P шифрование VK: seed-фраза, сохранение ключей, пользовательские ключи, автошифрование, emoji-шифротекст
 // @author       VKEncrypt
 // @match        https://vk.com/*
@@ -37,7 +37,7 @@
     // ============================================================
 
     const APP_NAME = 'VK P2P AES-GCM';
-    const APP_VERSION = '4.0';
+    const APP_VERSION = '4.1';
 
     const PREFIX = 'ENC[';
     const SUFFIX = ']';
@@ -147,6 +147,25 @@
         return out;
     }
 
+    function normalizeCustomKeyEntry(raw) {
+        if (!raw) return null;
+
+        if (typeof raw === 'string') {
+            if (!isValidKeyHex(raw)) return null;
+            return { key: raw.toLowerCase(), label: '' };
+        }
+
+        if (typeof raw === 'object') {
+            if (!isValidKeyHex(raw.key)) return null;
+            const label = typeof raw.label === 'string'
+                ? raw.label.trim().slice(0, 64)
+                : '';
+            return { key: String(raw.key).toLowerCase(), label };
+        }
+
+        return null;
+    }
+
     function loadDerivedKeys() {
         const saved = gmGetJson(STORAGE_KEYS.DERIVED_KEYS, null);
         if (areValidDerivedKeys(saved)) return normalizeKeyObject(saved);
@@ -165,7 +184,12 @@
 
     function loadCustomKeys() {
         const saved = gmGetJson(STORAGE_KEYS.CUSTOM_KEYS, {});
-        CUSTOM_KEYS = normalizeKeyObject(saved);
+        const out = {};
+        for (const [slot, raw] of Object.entries(saved || {})) {
+            const normalized = normalizeCustomKeyEntry(raw);
+            if (normalized) out[slot] = normalized;
+        }
+        CUSTOM_KEYS = out;
     }
 
     function saveCustomKeys() {
@@ -297,6 +321,17 @@
         };
     }
 
+    async function deriveKeyFromName(name) {
+        if (!name || !name.trim()) {
+            throw new Error('Пустое слово');
+        }
+        const hash = await crypto.subtle.digest(
+            'SHA-256',
+            new TextEncoder().encode(name.trim())
+        );
+        return bytesToHex(new Uint8Array(hash));
+    }
+
     async function encryptAESGCM(plainText, keyHex) {
         const key = await crypto.subtle.importKey(
             'raw',
@@ -355,10 +390,24 @@
         const all = {};
 
         if (DERIVED_KEYS) Object.assign(all, DERIVED_KEYS);
-        if (CUSTOM_KEYS) Object.assign(all, CUSTOM_KEYS);
+        if (CUSTOM_KEYS) {
+            for (const [slot, info] of Object.entries(CUSTOM_KEYS)) {
+                if (info && typeof info === 'object' && info.key) {
+                    all[slot] = info.key;
+                } else if (typeof info === 'string') {
+                    all[slot] = info;
+                }
+            }
+        }
         if (TEMP_KEY) all['@temp'] = TEMP_KEY;
 
         return all;
+    }
+
+    function getCustomKeyLabel(slot) {
+        const info = CUSTOM_KEYS[slot];
+        if (!info || typeof info !== 'object') return '';
+        return info.label || '';
     }
 
     function getCurrentKeyHex() {
@@ -605,6 +654,10 @@
                 border-radius: 9px;
                 cursor: pointer;
                 font: inherit;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                max-width: 100%;
             }
 
             .vk-p2p-menu-item:hover {
@@ -719,6 +772,21 @@
 
     function closeMenus() {
         document.querySelectorAll('.vk-p2p-menu').forEach(el => el.remove());
+    }
+
+    function truncateForDisplay(s, max = 16) {
+        if (!s) return '';
+        if (s.length <= max) return s;
+        return s.slice(0, max - 2) + '..';
+    }
+
+    function formatKeyDisplay(slotId) {
+        if (slotId === '@temp') return '⚡ @temp — временный';
+        if (['k1', 'k2', 'k3', 'k4'].includes(slotId)) return `🔑 ${slotId}`;
+
+        const label = getCustomKeyLabel(slotId);
+        if (!label) return `🔑 ${slotId}`;
+        return `🔑 ${slotId} (${truncateForDisplay(label)})`;
     }
 
     // ============================================================
@@ -853,17 +921,18 @@
             title: '➕ Пользовательский ключ',
             bodyHtml: `
                 <p>
-                    Добавь свой ключ в формате <b>64 hex-символа</b>. Он будет сохранён в Tampermonkey
-                    и появится в списке ключей.
+                    Введи имя для слота и <b>64 hex-символа</b> — или просто любое слово
+                    (например, «собака»). Из слова скрипт детерминированно выведет
+                    256-битный ключ. Собеседнику нужно ввести то же слово.
                 </p>
 
                 <input class="vk-p2p-input" id="vk-p2p-custom-name"
-                    placeholder="Имя ключа, например friend1">
+                    placeholder="Имя слота, например k5 или friend1">
 
                 <div style="height:8px"></div>
 
                 <textarea class="vk-p2p-textarea" id="vk-p2p-custom-key"
-                    placeholder="64 hex-символа"></textarea>
+                    placeholder="64 hex-символа ИЛИ любое слово: собака, мой-друг, ..."></textarea>
 
                 <p class="vk-p2p-error" id="vk-p2p-custom-error"></p>
             `,
@@ -876,14 +945,16 @@
         const nameInput = modal.querySelector('#vk-p2p-custom-name');
         const keyInput = modal.querySelector('#vk-p2p-custom-key');
         const error = modal.querySelector('#vk-p2p-custom-error');
+        const saveBtn = modal.querySelector('#vk-p2p-custom-save');
+        const cancelBtn = modal.querySelector('#vk-p2p-custom-cancel');
 
         setTimeout(() => nameInput.focus(), 80);
 
-        modal.querySelector('#vk-p2p-custom-cancel').addEventListener('click', () => overlay.remove());
+        cancelBtn.addEventListener('click', () => overlay.remove());
 
-        modal.querySelector('#vk-p2p-custom-save').addEventListener('click', () => {
+        async function handleSave() {
             let name = nameInput.value.trim();
-            const keyHex = keyInput.value.trim().toLowerCase();
+            const keyOrWord = keyInput.value.trim();
 
             if (!name) {
                 error.textContent = 'Введите имя ключа.';
@@ -905,21 +976,52 @@
                 return;
             }
 
-            if (!isValidKeyHex(keyHex)) {
-                error.textContent = 'Ключ должен быть ровно 64 hex-символа.';
+            if (!keyOrWord) {
+                error.textContent = 'Введите 64 hex-символа или любое слово.';
                 error.style.display = 'block';
                 return;
             }
 
-            CUSTOM_KEYS[name] = keyHex;
-            saveCustomKeys();
-            currentKeySlot = name;
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Создаю...';
 
-            overlay.remove();
-            updateEncryptButtonsTitle();
-            scan();
+            try {
+                let keyHex;
+                let label = '';
 
-            showToast(`✅ Ключ ${name} сохранён`);
+                if (isValidKeyHex(keyOrWord)) {
+                    keyHex = keyOrWord.toLowerCase();
+                } else {
+                    keyHex = await deriveKeyFromName(keyOrWord);
+                    label = keyOrWord;
+                }
+
+                CUSTOM_KEYS[name] = { key: keyHex, label };
+                saveCustomKeys();
+                currentKeySlot = name;
+
+                overlay.remove();
+                updateEncryptButtonsTitle();
+                scan();
+
+                const tag = label ? ` «${truncateForDisplay(label, 24)}»` : '';
+                showToast(`✅ ${name}${tag} сохранён`);
+            } catch (err) {
+                error.textContent = 'Ошибка: ' + err.message;
+                error.style.display = 'block';
+            } finally {
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Сохранить';
+            }
+        }
+
+        saveBtn.addEventListener('click', handleSave);
+
+        keyInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                handleSave();
+            }
         });
     }
 
@@ -1529,15 +1631,18 @@
                     item.classList.add('vk-p2p-menu-item-active');
                 }
 
-                item.textContent = slotId === '@temp'
-                    ? '⚡ @temp — временный'
-                    : `🔑 ${slotId}`;
+                item.textContent = formatKeyDisplay(slotId);
+                item.title = slotId === '@temp'
+                    ? 'Временный ключ (только в памяти)'
+                    : getCustomKeyLabel(slotId)
+                        ? `${slotId} — ${getCustomKeyLabel(slotId)}`
+                        : slotId;
 
                 item.addEventListener('click', () => {
                     currentKeySlot = slotId;
                     closeMenus();
                     updateEncryptButtonsTitle();
-                    showToast(`✅ Выбран ключ: ${slotId}`);
+                    showToast(`✅ Выбран ключ: ${formatKeyDisplay(slotId)}`);
                 });
 
                 menu.appendChild(item);
@@ -1602,7 +1707,12 @@
             addMenuSeparator(menu);
 
             customKeyNames.forEach(name => {
-                addMenuItem(menu, `🗑️ Удалить ключ ${name}`, () => {
+                const label = getCustomKeyLabel(name);
+                const display = label
+                    ? `${name} (${truncateForDisplay(label)})`
+                    : name;
+
+                addMenuItem(menu, `🗑️ Удалить ключ ${display}`, () => {
                     if (!confirm(`Удалить пользовательский ключ "${name}"?`)) return;
 
                     delete CUSTOM_KEYS[name];
