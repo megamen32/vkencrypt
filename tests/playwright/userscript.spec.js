@@ -297,6 +297,40 @@ test('auto decrypt off: шифротекст остаётся как есть д
     await expect(page.locator('.ConvoMessage__text')).toContainText('𓁗1Ⰴ𐌄Ⱑ');
 });
 
+test('auto decrypt toggle off: уже расшифрованные сообщения откатываются к шифру', async ({ page }) => {
+    const seed = 'seed для toggle off restore';
+    const derived = deriveDerivedKeys(seed);
+    const cipherText = encryptForEmoji('Верни шифр назад', derived.k1);
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoDecrypt: true })),
+        },
+        body: `
+            <div class="ConvoMessage__text">𓁗1Ⰴ𐌄Ⱑ${cipherText}</div>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-dec-content')).toHaveText('Верни шифр назад');
+
+    await page.locator('#vk-p2p-key-btn').click();
+    await page.getByRole('button', { name: /Авто-расшифровка: включена/i }).click();
+
+    await expect(page.locator('.ConvoMessage__text')).toContainText('𓁗1Ⰴ𐌄Ⱑ');
+    await expect(page.locator('.vk-dec-content')).toHaveCount(0);
+});
+
 test('invalid new payload: похожий префикс не должен вызывать ошибку расшифровки', async ({ page }) => {
     const derived = deriveDerivedKeys('seed для ложного совпадения');
     const errors = [];

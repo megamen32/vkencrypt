@@ -1354,6 +1354,7 @@
 
     function createToggleInterface(originalEnc, decryptedText, parentEl) {
         parentEl.innerHTML = '';
+        parentEl.dataset.vkdecOriginal = originalEnc;
 
         const textSpan = document.createElement('span');
         textSpan.className = 'vk-dec-content';
@@ -1392,6 +1393,7 @@
 
     function createErrorInterface(originalEnc, errorText, parentEl) {
         parentEl.innerHTML = '';
+        parentEl.dataset.vkdecOriginal = originalEnc;
 
         const rawSpan = document.createElement('span');
         rawSpan.className = 'vk-dec-content';
@@ -1406,6 +1408,19 @@
         parentEl.appendChild(rawSpan);
         parentEl.appendChild(errorLine);
         parentEl.dataset.vkdecDone = 'true';
+    }
+
+    function restoreIncomingMessage(msgEl) {
+        const originalEnc = msgEl.dataset.vkdecOriginal;
+        if (!originalEnc) return;
+
+        msgEl.innerHTML = '';
+        msgEl.textContent = originalEnc;
+        delete msgEl.dataset.vkdecDone;
+    }
+
+    function restoreAllIncomingMessages() {
+        document.querySelectorAll('[data-vkdec-original]').forEach(el => restoreIncomingMessage(el));
     }
 
     function extractNodeText(node) {
@@ -1960,6 +1975,9 @@
             settings.autoDecrypt = !settings.autoDecrypt;
             saveSettings();
             closeMenus();
+            if (!settings.autoDecrypt) {
+                restoreAllIncomingMessages();
+            }
             showToast(settings.autoDecrypt ? '✅ Авто-расшифровка включена' : '⏸️ Авто-расшифровка выключена');
             scan();
         });
