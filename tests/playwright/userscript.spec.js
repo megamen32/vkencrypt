@@ -446,6 +446,104 @@ test('incoming media: m.vk AttachDoc card с .vke headline тоже расшиф
     await expect(page.locator('#vk-attachdoc-link')).toHaveAttribute('download', 'attachdoc.png');
 });
 
+test('incoming media: m.vk AttachDoc card с audio .vke даёт audio preview и download', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для attachdoc audio');
+    const audioBytes = Buffer.from('OggSfake-audio', 'utf8');
+    const container = buildEncryptedMediaContainer({
+        keyHex: derived.k1,
+        mime: 'audio/ogg',
+        originalName: 'attachdoc-voice.ogg',
+        body: audioBytes,
+    });
+    const dataUrl = `data:application/octet-stream;base64,${container.toString('base64')}`;
+
+    await openMockChat(page, {
+        url: 'https://m.vk.com/mail/convo/1',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoDecrypt: true, encryptMediaUploads: true })),
+        },
+        body: `
+            <article class="ConvoMessage">
+                <div class="Attachments ConvoMessage__attachments ConvoMessage__attachments--withoutMarginTop">
+                    <a id="vk-attachdoc-audio-link" class="AttachDoc" href="${dataUrl}" target="_blank" rel="noopener noreferrer">
+                        <div class="AttachmentCell AttachmentCell--clickable">
+                            <div class="AttachmentCell__infoBlockContainer">
+                                <div class="AttachmentCell__infoBlock">
+                                    <h4 class="AttachmentCell__headline">attachdoc-voice.ogg.vke</h4>
+                                    <span class="AttachmentCell__footnote">VKE ᐧ 8 KB</span>
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                </div>
+            </article>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-p2p-media-preview audio')).toBeVisible();
+    await expect(page.locator('#vk-attachdoc-audio-link .AttachmentCell__headline')).toHaveText('attachdoc-voice.ogg');
+    await expect(page.locator('#vk-attachdoc-audio-link')).toHaveAttribute('download', 'attachdoc-voice.ogg');
+});
+
+test('incoming media: m.vk AttachDoc card с video .vke даёт video preview и download', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для attachdoc video');
+    const videoBytes = Buffer.from('fake-video-binary', 'utf8');
+    const container = buildEncryptedMediaContainer({
+        keyHex: derived.k1,
+        mime: 'video/mp4',
+        originalName: 'attachdoc-video.mp4',
+        body: videoBytes,
+    });
+    const dataUrl = `data:application/octet-stream;base64,${container.toString('base64')}`;
+
+    await openMockChat(page, {
+        url: 'https://m.vk.com/mail/convo/1',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoDecrypt: true, encryptMediaUploads: true })),
+        },
+        body: `
+            <article class="ConvoMessage">
+                <div class="Attachments ConvoMessage__attachments ConvoMessage__attachments--withoutMarginTop">
+                    <a id="vk-attachdoc-video-link" class="AttachDoc" href="${dataUrl}" target="_blank" rel="noopener noreferrer">
+                        <div class="AttachmentCell AttachmentCell--clickable">
+                            <div class="AttachmentCell__infoBlockContainer">
+                                <div class="AttachmentCell__infoBlock">
+                                    <h4 class="AttachmentCell__headline">attachdoc-video.mp4.vke</h4>
+                                    <span class="AttachmentCell__footnote">VKE ᐧ 14 KB</span>
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                </div>
+            </article>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-p2p-media-preview video')).toBeVisible();
+    await expect(page.locator('#vk-attachdoc-video-link .AttachmentCell__headline')).toHaveText('attachdoc-video.mp4');
+    await expect(page.locator('#vk-attachdoc-video-link')).toHaveAttribute('download', 'attachdoc-video.mp4');
+});
+
 test('incoming media: выключение авторасшифровки убирает preview обратно', async ({ page }) => {
     const derived = deriveDerivedKeys('seed для media toggle off');
     const pngBytes = Buffer.from(

@@ -22,6 +22,8 @@
 // @connect      *.vk.ru
 // @connect      userapi.com
 // @connect      *.userapi.com
+// @connect      mycdn.me
+// @connect      *.mycdn.me
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js
 // @downloadURL  https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js
