@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Auto-bump patch version и пересборка userscript после любого коммита,
-# который трогает extension/vkencrypt.template.js.
+# который трогает extension/vkencrypt.user.js.
 #
 # Поведение:
-#   - Коммит изменил vkencrypt.template.js → читаем текущий @version,
-#     инкрементим patch (4.1.2 → 4.1.3), пишем обратно в template и
-#     синхронизируем vkencrypt.user.js, гоняем build.sh.
+#   - Коммит изменил vkencrypt.user.js → читаем текущий @version,
+#     инкрементим patch (4.1.2 → 4.1.3), пишем обратно в userscript,
+#     гоняем build.sh.
 #   - Создаём отдельный коммит "chore(version): bump to vX.Y.Z".
 #   - Если последний коммит уже наш bump — выходим (защита от рекурсии).
 #
@@ -14,7 +14,6 @@ set -e
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 EXT_DIR="$REPO_ROOT/extension"
-TEMPLATE="$EXT_DIR/vkencrypt.template.js"
 USERJS="$EXT_DIR/vkencrypt.user.js"
 
 # 1. Защита от рекурсии
@@ -23,8 +22,8 @@ if [[ "$LAST_MSG" == "chore(version):"* ]]; then
     exit 0
 fi
 
-# 2. Трогали ли template в этом коммите?
-if ! git diff-tree --no-commit-id --name-only -r HEAD | grep -qE 'extension/vkencrypt\.template\.js$'; then
+# 2. Трогали ли userscript в этом коммите?
+if ! git diff-tree --no-commit-id --name-only -r HEAD | grep -qE 'extension/vkencrypt\.user\.js$'; then
     exit 0
 fi
 
@@ -43,14 +42,13 @@ const re2 = new RegExp('(APP_VERSION\\\\s*=\\\\s*[\\'\\\"])' + major + '\\\\.' +
 out = out.replace(re2, '\$1' + next);
 fs.writeFileSync(process.argv[1], out);
 console.log(next);
-" "$TEMPLATE")
+" "$USERJS")
 
-# 4. Синхронизируем user.js и пересобираем
-cp "$TEMPLATE" "$USERJS"
+# 4. Пересобираем snapshot
 (cd "$EXT_DIR" && ./build.sh > /dev/null)
 
-# 5. Коммитим бамп (dist/ в .gitignore, так что только template + user.js)
-git add "$TEMPLATE" "$USERJS"
+# 5. Коммитим бамп (dist/ в .gitignore, так что только userscript)
+git add "$USERJS"
 git commit -m "chore(version): bump to v$NEW_VER" > /dev/null
 
 echo "✅ Auto-bumped to v$NEW_VER (hook: scripts/hooks/post-commit)"

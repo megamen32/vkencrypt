@@ -13,6 +13,13 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_xmlhttpRequest
+// @connect      vk.com
+// @connect      m.vk.com
+// @connect      vk.ru
+// @connect      m.vk.ru
+// @connect      *.vk.com
+// @connect      *.vk.ru
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js
 // @downloadURL  https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js
@@ -892,6 +899,7 @@
                 gap: 2px;
                 margin-right: 2px;
                 vertical-align: middle;
+                transform: translateY(-1px);
             }
 
             .vk-p2p-icon-btn {
@@ -1644,6 +1652,51 @@
         return `${(value / (1024 * 1024)).toFixed(1)} MB`;
     }
 
+    function getMediaLinkName(link) {
+        if (!link) return '';
+
+        const headline = link.querySelector('.AttachmentCell__headline, h4');
+        if (headline?.textContent) {
+            return headline.textContent.trim();
+        }
+
+        return (link.textContent || '').trim();
+    }
+
+    function setMediaLinkName(link, name) {
+        if (!link) return;
+
+        const headline = link.querySelector('.AttachmentCell__headline, h4');
+        if (headline) {
+            headline.textContent = name;
+            return;
+        }
+
+        link.textContent = name;
+    }
+
+    function setMediaLinkFootnote(link, metadata, sizeBytes) {
+        if (!link) return;
+
+        const footnote = link.querySelector('.AttachmentCell__footnote');
+        if (!footnote) return;
+
+        const ext = (String(metadata?.originalName || '').split('.').pop() || 'BIN').toUpperCase();
+        footnote.textContent = `${ext} ᐧ ${formatByteSize(sizeBytes)}`;
+    }
+
+    function isEncryptedMediaLink(link) {
+        const name = getMediaLinkName(link);
+        const href = link.getAttribute('href') || '';
+        const footnote = (link.querySelector('.AttachmentCell__footnote')?.textContent || '').trim();
+
+        return (
+            /\.vke$/i.test(name) ||
+            /\.vke($|[?#])/i.test(href) ||
+            (/\.vke/i.test(name) && /\bVKE\b/i.test(footnote))
+        );
+    }
+
     function getEncryptedMediaLinks() {
         const links = new Set();
 
@@ -1654,12 +1707,10 @@
                 return;
             }
 
-            const text = (link.textContent || '').trim();
-            const href = link.getAttribute('href') || '';
-            if (!isEncryptedMediaName(text) && !isEncryptedMediaName(href)) return;
+            if (!isEncryptedMediaLink(link)) return;
 
             const container = link.closest(
-                'article, .ConvoMessage, .ConvoMessage__text, .MessageText, .im_msg_text, .im-message--text, [role="listitem"]'
+                'article, .ConvoMessage, .ConvoMessage__text, .MessageText, .im_msg_text, .im-message--text, [role="listitem"], .Attachments'
             );
             if (!container) return;
 
@@ -1677,7 +1728,8 @@
 
         if (!link.dataset.vkP2POriginalHref) {
             link.dataset.vkP2POriginalHref = link.getAttribute('href') || '';
-            link.dataset.vkP2POriginalText = (link.textContent || '').trim();
+            link.dataset.vkP2POriginalText = getMediaLinkName(link);
+            link.dataset.vkP2POriginalFootnote = (link.querySelector('.AttachmentCell__footnote')?.textContent || '').trim();
         }
 
         const box = document.createElement('div');
@@ -1730,13 +1782,19 @@
 
         const originalHref = link.dataset.vkP2POriginalHref;
         const originalText = link.dataset.vkP2POriginalText;
+        const originalFootnote = link.dataset.vkP2POriginalFootnote;
 
         if (typeof originalHref === 'string') {
             link.setAttribute('href', originalHref);
         }
 
         if (typeof originalText === 'string') {
-            link.textContent = originalText;
+            setMediaLinkName(link, originalText);
+        }
+
+        const footnote = link.querySelector('.AttachmentCell__footnote');
+        if (footnote && typeof originalFootnote === 'string') {
+            footnote.textContent = originalFootnote;
         }
 
         link.removeAttribute('download');
@@ -1796,7 +1854,30 @@
     }
 
     async function fetchEncryptedMediaBytes(link) {
-        const response = await fetch(link.href, {
+        const url = link.href;
+
+        if (typeof GM_xmlhttpRequest === 'function' && /^https?:/i.test(url) && !url.startsWith(location.origin)) {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url,
+                    responseType: 'arraybuffer',
+                    onload: (response) => {
+                        if (response.status >= 200 && response.status < 300 && response.response) {
+                            resolve(new Uint8Array(response.response));
+                            return;
+                        }
+
+                        reject(new Error(`HTTP ${response.status}`));
+                    },
+                    onerror: () => {
+                        reject(new Error('GM_xmlhttpRequest failed'));
+                    }
+                });
+            });
+        }
+
+        const response = await fetch(url, {
             credentials: 'include'
         });
 
@@ -1857,7 +1938,8 @@
         if (link) {
             link.href = objectUrl;
             link.download = metadata.originalName || 'media.bin';
-            link.textContent = metadata.originalName || 'media.bin';
+            setMediaLinkName(link, metadata.originalName || 'media.bin');
+            setMediaLinkFootnote(link, metadata, metadata.originalSize || bytes.length);
         }
 
         if (decryptBtn) {

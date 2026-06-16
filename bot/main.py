@@ -32,7 +32,7 @@ TOKEN = os.environ["VK_TOKEN"]
 MY_USER_ID = int(os.environ["MY_USER_ID"])
 DEFAULT_KEY_ID = os.environ.get("DEFAULT_KEY_ID", "k1")
 
-# === KDF параметры — должны 1-в-1 совпадать с extension/vkencrypt.template.js ===
+# === KDF параметры — должны 1-в-1 совпадать с extension/vkencrypt.user.js ===
 KDF_SALT = "vk-p2p-aes-gcm-v1"
 KDF_ITERATIONS = 250_000
 KDF_DKLEN = 128  # 4 × 32 байта

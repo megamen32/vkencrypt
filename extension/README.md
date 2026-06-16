@@ -20,30 +20,18 @@
 
 ```text
 extension/
-├── vkencrypt.template.js   # Исходник userscript (правим руками, коммитим)
-├── vkencrypt.user.js       # Установочный файл — копия template, на него указывают @updateURL/@downloadURL
-├── build.sh                # Сборка: копирует template в dist/ и в vkencrypt.user.js
+├── vkencrypt.user.js       # Исходник и установочный файл userscript
+├── build.sh                # Сборка: копирует userscript в dist/
 ├── clean.sh                # Удалить dist/
 ├── dist/                   # Собранные снапшоты userscript (gitignored)
 └── README.md
 ```
 
-### Почему два `.js` файла — `template.js` и `user.js`
-
-Это разделение «исходник ↔ артефакт» — у них одна и та же роль, но разные имена.
+### Почему теперь один `.js` файл
 
 - **Расширение `.user.js` обязательно для Tampermonkey/Userscripts.** Браузер распознаёт userscript только если URL оканчивается на `.user.js` — иначе вместо страницы установки скачается обычный файл. Поэтому стабильный install-URL должен выглядеть как `…/extension/vkencrypt.user.js`.
-- **`vkencrypt.template.js`** — единственный источник правок. Логика, UI, селекторы VK. Безопасно коммитится в git — никаких секретов внутри.
-- **`vkencrypt.user.js`** — байт-в-байт копия template после сборки. Лежит в репо, чтобы `https://raw.githubusercontent.com/.../extension/vkencrypt.user.js` всегда отдавал валидный userscript (а не 404) и Tampermonkey мог его найти для автообновления.
-- **`build.sh`** в v4+ просто публикует актуальный template: копирует его в `dist/vkencrypt_userscript_<timestamp>.js` (снапшот для архива) и перезаписывает `vkencrypt.user.js` (стабильный install-файл). Никакой инжекции ключей — их в коде больше нет.
-
-Если правишь `vkencrypt.template.js` руками — обнови `vkencrypt.user.js` (`./build.sh` или `cp`), иначе Tampermonkey заберёт старую версию при апдейте.
-
-**Можно ли обойтись одним файлом?** Технически да: переименовать template в `vkencrypt.user.js` и редактировать его. Но тогда:
-- нельзя держать в репе «безопасный исходник» и публиковать собранный артефакт из разных путей;
-- `build.sh` теряет смысл, и `dist/` со снапшотами перестаёт существовать.
-
-Поэтому держим пару.
+- **`vkencrypt.user.js`** — единственный источник правок и одновременно install-файл. Логика, UI, селекторы VK, metadata userscript — всё живёт в одном месте.
+- **`build.sh`** делает только snapshot в `dist/vkencrypt_userscript_<timestamp>.js` для архива и ручных откатов. Никакой инжекции ключей — их в коде нет.
 
 ## Сборка
 
@@ -52,7 +40,7 @@ cd extension
 ./build.sh
 ```
 
-Скрипт скопирует `vkencrypt.template.js` в `dist/vkencrypt_userscript_YYYYMMDD_HHMMSS.js` (снапшот) и в `vkencrypt.user.js` (стабильный install-файл). Ключей в файле нет — secrets не утекают.
+Скрипт скопирует `vkencrypt.user.js` в `dist/vkencrypt_userscript_YYYYMMDD_HHMMSS.js` (снапшот). Ключей в файле нет — secrets не утекают.
 
 Очистить снапшоты:
 

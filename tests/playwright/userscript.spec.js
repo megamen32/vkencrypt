@@ -394,6 +394,58 @@ test('incoming media: .vke attachment auto-decrypts image and exposes download',
     await expect(page.locator('#vk-media-link')).toHaveAttribute('download', 'cat.png');
 });
 
+test('incoming media: m.vk AttachDoc card с .vke headline тоже расшифровывается', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для attachdoc');
+    const pngBytes = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jk2QAAAAASUVORK5CYII=',
+        'base64'
+    );
+    const container = buildEncryptedMediaContainer({
+        keyHex: derived.k1,
+        mime: 'image/png',
+        originalName: 'attachdoc.png',
+        body: pngBytes,
+    });
+    const dataUrl = `data:application/octet-stream;base64,${container.toString('base64')}`;
+
+    await openMockChat(page, {
+        url: 'https://m.vk.com/mail/convo/1',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoDecrypt: true, encryptMediaUploads: true })),
+        },
+        body: `
+            <article class="ConvoMessage">
+                <div class="Attachments ConvoMessage__attachments ConvoMessage__attachments--withoutMarginTop">
+                    <a id="vk-attachdoc-link" class="AttachDoc" href="${dataUrl}" target="_blank" rel="noopener noreferrer">
+                        <div class="AttachmentCell AttachmentCell--clickable">
+                            <div class="AttachmentCell__infoBlockContainer">
+                                <div class="AttachmentCell__infoBlock">
+                                    <h4 class="AttachmentCell__headline">attachdoc.png.vke</h4>
+                                    <span class="AttachmentCell__footnote">VKE ᐧ 61 KB</span>
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                </div>
+            </article>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-p2p-media-preview img')).toBeVisible();
+    await expect(page.locator('#vk-attachdoc-link .AttachmentCell__headline')).toHaveText('attachdoc.png');
+    await expect(page.locator('#vk-attachdoc-link')).toHaveAttribute('download', 'attachdoc.png');
+});
+
 test('incoming media: выключение авторасшифровки убирает preview обратно', async ({ page }) => {
     const derived = deriveDerivedKeys('seed для media toggle off');
     const pngBytes = Buffer.from(

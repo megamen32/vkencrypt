@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const USERSCRIPT_PATH = path.join(__dirname, '..', '..', 'extension', 'vkencrypt.template.js');
+const USERSCRIPT_PATH = path.join(__dirname, '..', '..', 'extension', 'vkencrypt.user.js');
 
 function loadUserscriptCode() {
     const raw = fs.readFileSync(USERSCRIPT_PATH, 'utf8');
@@ -16,6 +16,22 @@ const GM_STUBS = `
         window.GM_getValue = (k, d) => _store.has(k) ? _store.get(k) : d;
         window.GM_setValue = (k, v) => { _store.set(k, v); };
         window.GM_deleteValue = (k) => { _store.delete(k); };
+        window.GM_xmlhttpRequest = ({ url, responseType, onload, onerror }) => {
+            fetch(url)
+                .then(async response => {
+                    const body = responseType === 'arraybuffer'
+                        ? await response.arrayBuffer()
+                        : await response.text();
+                    onload?.({
+                        status: response.status,
+                        response: body,
+                        responseText: typeof body === 'string' ? body : ''
+                    });
+                })
+                .catch(error => {
+                    onerror?.(error);
+                });
+        };
         window.__gmStore = _store;
     })();
 `;
