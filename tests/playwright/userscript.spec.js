@@ -35,6 +35,7 @@ const CYRILLIC_ALPHABET = [
 const FORMAT_START = '𓁗';
 const FORMAT_MID = 'Ⰴ';
 const FORMAT_PAYLOAD = 'Ⱑ';
+const MEDIA_CONTAINER_MAGIC = 'VKEM1';
 const CODEC_MARKERS = {
     base64: '𐌁',
     emoji: '𐌄',
@@ -110,6 +111,34 @@ function renderEmojiAsImages(payload) {
 
         return `<img src=\"data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==\" alt=\"${ch}\" class=\"Emoji\">`;
     }).join('');
+}
+
+function encryptBinaryPayload(buffer, keyHex) {
+    const key = Buffer.from(keyHex, 'hex');
+    const iv = crypto.randomBytes(IV_LEN);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    const ct = Buffer.concat([cipher.update(buffer), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return Buffer.concat([iv, ct, tag]);
+}
+
+function buildEncryptedMediaContainer({ keyId = 'k1', keyHex, mime, originalName, body }) {
+    const payload = encryptBinaryPayload(body, keyHex);
+    const meta = Buffer.from(JSON.stringify({
+        version: 1,
+        keyId,
+        mime,
+        originalName,
+        originalSize: body.length,
+    }), 'utf8');
+    const metaLen = Buffer.alloc(4);
+    metaLen.writeUInt32BE(meta.length, 0);
+    return Buffer.concat([
+        Buffer.from(MEDIA_CONTAINER_MAGIC, 'utf8'),
+        metaLen,
+        meta,
+        payload,
+    ]);
 }
 
 test('init: скрипт грузится, рисует кнопки в старом поле ввода', async ({ page }) => {
@@ -254,6 +283,144 @@ test('share instruction: пункт меню вставляет plaintext-инс
     expect(sentText).toContain('CyberChef');
     expect(sentText).toContain('Ключ я отправлю отдельно');
     expect(sentText).not.toMatch(/^𓁗/u);
+});
+
+test('media upload: image/audio/video подменяются на encrypted .vke до upload-listener страницы', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для media upload');
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ encryptMediaUploads: true })),
+        },
+        body: `
+            <div class="ConvoComposer__inputPanel">
+                <button class="ConvoComposer__button" aria-label="Загрузить файл">+</button>
+                <input id="vk-media-input" type="file" accept="image/*,audio/*,video/*">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button" aria-label="Выбрать эмодзи">☺</button>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await page.locator('#vk-media-input').evaluate(input => {
+        input.addEventListener('change', async () => {
+            const file = input.files[0];
+            window.__mediaUploadInfo = {
+                name: file.name,
+                type: file.type,
+                size: file.size,
+                prefix: Array.from(new Uint8Array(await file.slice(0, 5).arrayBuffer())),
+            };
+        });
+    });
+
+    await page.locator('#vk-media-input').setInputFiles({
+        name: 'photo.png',
+        mimeType: 'image/png',
+        buffer: Buffer.from('not-a-real-png'),
+    });
+
+    await expect.poll(async () => page.evaluate(() => window.__mediaUploadInfo || null)).toMatchObject({
+        name: 'photo.png.vke',
+        type: 'application/octet-stream',
+    });
+
+    const info = await page.evaluate(() => window.__mediaUploadInfo);
+    expect(info.prefix).toEqual(Array.from(Buffer.from(MEDIA_CONTAINER_MAGIC, 'utf8')));
+});
+
+test('incoming media: .vke attachment auto-decrypts image and exposes download', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для incoming media');
+    const pngBytes = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jk2QAAAAASUVORK5CYII=',
+        'base64'
+    );
+    const container = buildEncryptedMediaContainer({
+        keyHex: derived.k1,
+        mime: 'image/png',
+        originalName: 'cat.png',
+        body: pngBytes,
+    });
+    const dataUrl = `data:application/octet-stream;base64,${container.toString('base64')}`;
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoDecrypt: true, encryptMediaUploads: true })),
+        },
+        body: `
+            <div class="ConvoMessage__text">
+                <a id="vk-media-link" href="${dataUrl}">cat.png.vke</a>
+            </div>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-p2p-media-preview img')).toBeVisible();
+    await expect(page.locator('.vk-p2p-media-download')).toHaveAttribute('download', 'cat.png');
+    await expect(page.locator('.vk-p2p-media-meta')).toContainText('cat.png');
+});
+
+test('incoming media: выключение авторасшифровки убирает preview обратно', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для media toggle off');
+    const pngBytes = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jk2QAAAAASUVORK5CYII=',
+        'base64'
+    );
+    const container = buildEncryptedMediaContainer({
+        keyHex: derived.k1,
+        mime: 'image/png',
+        originalName: 'toggle.png',
+        body: pngBytes,
+    });
+    const dataUrl = `data:application/octet-stream;base64,${container.toString('base64')}`;
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoDecrypt: true, encryptMediaUploads: true })),
+        },
+        body: `
+            <div class="ConvoMessage__text">
+                <a href="${dataUrl}">toggle.png.vke</a>
+            </div>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-p2p-media-preview img')).toBeVisible();
+
+    await page.locator('#vk-p2p-key-btn').click();
+    await page.getByRole('button', { name: /Авто-расшифровка: включена/i }).click();
+
+    await expect(page.locator('.vk-p2p-media-preview img')).toHaveCount(0);
+    await expect(page.locator('.vk-p2p-media-download')).toBeHidden();
 });
 
 test('emoji incoming: emj.-шифротекст расшифровывается без atob error', async ({ page }) => {

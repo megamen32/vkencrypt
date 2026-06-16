@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK P2P AES-GCM
 // @namespace    local
-// @version      5.0
+// @version      5.1.0
 // @description  P2P шифрование VK: seed-фраза, сохранение ключей, пользовательские ключи, автошифрование, emoji-шифротекст
 // @author       VKEncrypt
 // @match        https://vk.com/*
@@ -22,7 +22,7 @@
     'use strict';
 
     // ============================================================
-    // VK P2P AES-GCM v5.0
+    // VK P2P AES-GCM v5.1.0
     //
     // Что умеет:
     // - НЕ показывает модалку сразу после установки.
@@ -39,7 +39,7 @@
     // ============================================================
 
     const APP_NAME = 'VK P2P AES-GCM';
-    const APP_VERSION = '5.0';
+    const APP_VERSION = '5.1.0';
 
     const FORMAT_START = '𓁗';
     const FORMAT_MID = 'Ⰴ';
@@ -91,6 +91,9 @@
         'Onetime Secret: https://onetimesecret.com/',
         'Password Pusher: https://pwpush.com/'
     ];
+    const MEDIA_CONTAINER_MAGIC = 'VKEM1';
+    const MEDIA_CONTAINER_EXT = '.vke';
+    const MEDIA_ENCRYPTED_MIME = 'application/octet-stream';
 
     const IV_LEN = 12;
     const TAG_LEN = 16;
@@ -116,7 +119,8 @@
         autoEncrypt: false,
         saveDerivedKeys: true,
         autoDecrypt: true,
-        cipherCodec: 'emoji'
+        cipherCodec: 'emoji',
+        encryptMediaUploads: true
     };
 
     let isAutoSending = false;
@@ -283,6 +287,37 @@
         }
 
         return btoa(binary);
+    }
+
+    function utf8ToBytes(text) {
+        return new TextEncoder().encode(text);
+    }
+
+    function bytesToUtf8(bytes) {
+        return new TextDecoder().decode(bytes);
+    }
+
+    function concatBytes(parts) {
+        const total = parts.reduce((sum, part) => sum + part.length, 0);
+        const out = new Uint8Array(total);
+        let offset = 0;
+
+        parts.forEach(part => {
+            out.set(part, offset);
+            offset += part.length;
+        });
+
+        return out;
+    }
+
+    function uint32ToBytes(value) {
+        const out = new Uint8Array(4);
+        new DataView(out.buffer).setUint32(0, value, false);
+        return out;
+    }
+
+    function bytesToUint32(bytes, offset = 0) {
+        return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset, false);
     }
 
     function base64ToBytes(b64) {
@@ -525,6 +560,121 @@
         );
 
         return new TextDecoder().decode(decrypted);
+    }
+
+    async function encryptBinaryAESGCM(dataBytes, keyHex) {
+        const key = await crypto.subtle.importKey(
+            'raw',
+            hexToBytes(keyHex),
+            { name: 'AES-GCM' },
+            false,
+            ['encrypt']
+        );
+
+        const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
+        const encrypted = await crypto.subtle.encrypt(
+            { name: 'AES-GCM', iv, tagLength: 128 },
+            key,
+            dataBytes
+        );
+
+        return concatBytes([iv, new Uint8Array(encrypted)]);
+    }
+
+    async function decryptBinaryAESGCM(payloadBytes, keyHex) {
+        if (payloadBytes.length < IV_LEN + TAG_LEN) {
+            throw new Error('Media payload too short');
+        }
+
+        const key = await crypto.subtle.importKey(
+            'raw',
+            hexToBytes(keyHex),
+            { name: 'AES-GCM' },
+            false,
+            ['decrypt']
+        );
+
+        const iv = payloadBytes.slice(0, IV_LEN);
+        const ciphertextWithTag = payloadBytes.slice(IV_LEN);
+        const decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv, tagLength: 128 },
+            key,
+            ciphertextWithTag
+        );
+
+        return new Uint8Array(decrypted);
+    }
+
+    function buildEncryptedMediaName(originalName) {
+        const clean = String(originalName || 'media.bin').trim() || 'media.bin';
+        return clean.endsWith(MEDIA_CONTAINER_EXT) ? clean : `${clean}${MEDIA_CONTAINER_EXT}`;
+    }
+
+    function isEncryptedMediaName(name) {
+        return new RegExp(`${MEDIA_CONTAINER_EXT}(?:$|[?#])`, 'i').test(String(name || ''));
+    }
+
+    function isEncryptableMediaFile(file) {
+        return Boolean(
+            file &&
+            typeof file.type === 'string' &&
+            /^(image|audio|video)\//i.test(file.type)
+        );
+    }
+
+    async function buildEncryptedMediaFile(file, keyHex, slotId) {
+        const sourceBytes = new Uint8Array(await file.arrayBuffer());
+        const encryptedPayload = await encryptBinaryAESGCM(sourceBytes, keyHex);
+        const metadata = {
+            version: 1,
+            keyId: slotId,
+            mime: file.type || 'application/octet-stream',
+            originalName: file.name || 'media.bin',
+            originalSize: file.size || sourceBytes.length
+        };
+        const metaBytes = utf8ToBytes(JSON.stringify(metadata));
+        const header = concatBytes([
+            utf8ToBytes(MEDIA_CONTAINER_MAGIC),
+            uint32ToBytes(metaBytes.length),
+            metaBytes
+        ]);
+        const containerBytes = concatBytes([header, encryptedPayload]);
+
+        return new File(
+            [containerBytes],
+            buildEncryptedMediaName(file.name),
+            {
+                type: MEDIA_ENCRYPTED_MIME,
+                lastModified: Date.now()
+            }
+        );
+    }
+
+    function parseEncryptedMediaContainer(bytes) {
+        const magicBytes = utf8ToBytes(MEDIA_CONTAINER_MAGIC);
+
+        if (bytes.length < magicBytes.length + 4 + IV_LEN + TAG_LEN) {
+            throw new Error('Encrypted media container too short');
+        }
+
+        const actualMagic = bytesToUtf8(bytes.slice(0, magicBytes.length));
+        if (actualMagic !== MEDIA_CONTAINER_MAGIC) {
+            throw new Error('Unknown encrypted media format');
+        }
+
+        const metaLength = bytesToUint32(bytes, magicBytes.length);
+        const metaStart = magicBytes.length + 4;
+        const metaEnd = metaStart + metaLength;
+
+        if (metaEnd > bytes.length) {
+            throw new Error('Broken encrypted media metadata');
+        }
+
+        const metadata = JSON.parse(bytesToUtf8(bytes.slice(metaStart, metaEnd)));
+        return {
+            metadata,
+            encryptedPayload: bytes.slice(metaEnd)
+        };
     }
 
     function getAllKeys() {
@@ -889,6 +1039,64 @@
                 font-size: 12px;
                 line-height: 1.35;
                 color: rgba(255, 255, 255, 0.72);
+            }
+
+            .vk-p2p-media-box {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+                margin-top: 8px;
+                padding: 10px 12px;
+                border-radius: 12px;
+                background: rgba(38, 136, 235, 0.10);
+                max-width: min(520px, 100%);
+            }
+
+            .vk-p2p-media-actions {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex-wrap: wrap;
+            }
+
+            .vk-p2p-media-btn,
+            .vk-p2p-media-download {
+                border: none;
+                border-radius: 999px;
+                padding: 6px 10px;
+                font-size: 12px;
+                line-height: 1.2;
+                cursor: pointer;
+                background: rgba(38, 136, 235, 0.18);
+                color: inherit;
+                text-decoration: none;
+            }
+
+            .vk-p2p-media-download[hidden] {
+                display: none !important;
+            }
+
+            .vk-p2p-media-meta {
+                font-size: 12px;
+                opacity: 0.72;
+                word-break: break-word;
+            }
+
+            .vk-p2p-media-preview img,
+            .vk-p2p-media-preview video {
+                display: block;
+                max-width: min(420px, 100%);
+                border-radius: 10px;
+            }
+
+            .vk-p2p-media-preview audio {
+                width: min(420px, 100%);
+            }
+
+            .vk-p2p-media-error {
+                font-size: 12px;
+                line-height: 1.35;
+                color: #b91c1c;
             }
         `;
 
@@ -1420,6 +1628,247 @@
         parentEl.dataset.vkdecDone = 'true';
     }
 
+    function formatByteSize(size) {
+        const value = Number(size) || 0;
+        if (value < 1024) return `${value} B`;
+        if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+        return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function getEncryptedMediaLinks() {
+        const links = new Set();
+
+        document.querySelectorAll('a[href]').forEach(link => {
+            if (link.closest('.vk-p2p-media-box')) return;
+            if (link.dataset.vkP2PMediaLink === 'true') {
+                links.add(link);
+                return;
+            }
+
+            const text = (link.textContent || '').trim();
+            const href = link.getAttribute('href') || '';
+            if (!isEncryptedMediaName(text) && !isEncryptedMediaName(href)) return;
+
+            const container = link.closest(
+                'article, .ConvoMessage, .ConvoMessage__text, .MessageText, .im_msg_text, .im-message--text, [role="listitem"]'
+            );
+            if (!container) return;
+
+            links.add(link);
+        });
+
+        return links;
+    }
+
+    function ensureMediaInterface(link) {
+        if (link.dataset.vkP2PMediaLink === 'true') {
+            const existing = link.parentElement?.querySelector('.vk-p2p-media-box');
+            if (existing) return existing;
+        }
+
+        const box = document.createElement('div');
+        box.className = 'vk-p2p-media-box';
+        box.dataset.vkdecSkip = 'true';
+
+        const actions = document.createElement('div');
+        actions.className = 'vk-p2p-media-actions';
+
+        const decryptBtn = document.createElement('button');
+        decryptBtn.type = 'button';
+        decryptBtn.className = 'vk-p2p-media-btn';
+        decryptBtn.textContent = '🔓 Расшифровать media';
+
+        const downloadLink = document.createElement('a');
+        downloadLink.className = 'vk-p2p-media-download';
+        downloadLink.textContent = 'Скачать';
+        downloadLink.hidden = true;
+        downloadLink.target = '_blank';
+        downloadLink.rel = 'noopener noreferrer';
+
+        const meta = document.createElement('div');
+        meta.className = 'vk-p2p-media-meta';
+        meta.textContent = 'Зашифрованное вложение VKEncrypt';
+
+        const preview = document.createElement('div');
+        preview.className = 'vk-p2p-media-preview';
+
+        const error = document.createElement('div');
+        error.className = 'vk-p2p-media-error';
+
+        actions.appendChild(decryptBtn);
+        actions.appendChild(downloadLink);
+        box.appendChild(actions);
+        box.appendChild(meta);
+        box.appendChild(preview);
+        box.appendChild(error);
+
+        decryptBtn.addEventListener('click', () => {
+            decryptIncomingMediaLink(link, { manual: true });
+        });
+
+        link.insertAdjacentElement('afterend', box);
+        link.dataset.vkP2PMediaLink = 'true';
+        return box;
+    }
+
+    function resetMediaInterface(box) {
+        if (!box) return;
+
+        const preview = box.querySelector('.vk-p2p-media-preview');
+        const error = box.querySelector('.vk-p2p-media-error');
+        const downloadLink = box.querySelector('.vk-p2p-media-download');
+        const decryptBtn = box.querySelector('.vk-p2p-media-btn');
+
+        if (preview?.dataset.vkP2PObjectUrl) {
+            URL.revokeObjectURL(preview.dataset.vkP2PObjectUrl);
+            delete preview.dataset.vkP2PObjectUrl;
+        }
+
+        if (preview) preview.innerHTML = '';
+        if (error) error.textContent = '';
+        if (downloadLink) {
+            downloadLink.hidden = true;
+            downloadLink.removeAttribute('href');
+            downloadLink.removeAttribute('download');
+        }
+        if (decryptBtn) {
+            decryptBtn.disabled = false;
+            decryptBtn.textContent = '🔓 Расшифровать media';
+        }
+
+        delete box.dataset.vkP2PDecoded;
+        delete box.dataset.vkP2PAutoTried;
+    }
+
+    function restoreAllIncomingMedia() {
+        document.querySelectorAll('.vk-p2p-media-box').forEach(box => resetMediaInterface(box));
+    }
+
+    async function fetchEncryptedMediaBytes(link) {
+        const response = await fetch(link.href, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        return new Uint8Array(await response.arrayBuffer());
+    }
+
+    function renderDecryptedMedia(box, metadata, bytes) {
+        const preview = box.querySelector('.vk-p2p-media-preview');
+        const meta = box.querySelector('.vk-p2p-media-meta');
+        const downloadLink = box.querySelector('.vk-p2p-media-download');
+        const decryptBtn = box.querySelector('.vk-p2p-media-btn');
+        const blob = new Blob([bytes], {
+            type: metadata.mime || 'application/octet-stream'
+        });
+        const objectUrl = URL.createObjectURL(blob);
+
+        if (preview?.dataset.vkP2PObjectUrl) {
+            URL.revokeObjectURL(preview.dataset.vkP2PObjectUrl);
+        }
+
+        preview.innerHTML = '';
+        preview.dataset.vkP2PObjectUrl = objectUrl;
+
+        if (/^image\//i.test(metadata.mime || '')) {
+            const img = document.createElement('img');
+            img.src = objectUrl;
+            img.alt = metadata.originalName || 'encrypted image';
+            preview.appendChild(img);
+        } else if (/^audio\//i.test(metadata.mime || '')) {
+            const audio = document.createElement('audio');
+            audio.controls = true;
+            audio.src = objectUrl;
+            preview.appendChild(audio);
+        } else if (/^video\//i.test(metadata.mime || '')) {
+            const video = document.createElement('video');
+            video.controls = true;
+            video.src = objectUrl;
+            preview.appendChild(video);
+        }
+
+        if (meta) {
+            meta.textContent = `${metadata.originalName || 'media'} • ${formatByteSize(metadata.originalSize || bytes.length)}`;
+        }
+
+        if (downloadLink) {
+            downloadLink.href = objectUrl;
+            downloadLink.download = metadata.originalName || 'media.bin';
+            downloadLink.hidden = false;
+        }
+
+        if (decryptBtn) {
+            decryptBtn.textContent = '↻ Расшифровать заново';
+            decryptBtn.disabled = false;
+        }
+
+        box.dataset.vkP2PDecoded = 'true';
+    }
+
+    async function decryptIncomingMediaLink(link, { manual = false } = {}) {
+        const box = ensureMediaInterface(link);
+        const decryptBtn = box.querySelector('.vk-p2p-media-btn');
+        const error = box.querySelector('.vk-p2p-media-error');
+
+        if (!hasAnyKeys()) {
+            if (manual) showSeedSetupModal();
+            return;
+        }
+
+        if (decryptBtn) {
+            decryptBtn.disabled = true;
+            decryptBtn.textContent = 'Расшифровываю...';
+        }
+        if (error) error.textContent = '';
+
+        try {
+            const containerBytes = await fetchEncryptedMediaBytes(link);
+            const parsed = parseEncryptedMediaContainer(containerBytes);
+            const slotId = parsed.metadata?.keyId || currentKeySlot;
+            const keyHex = getAllKeys()[slotId];
+
+            if (!keyHex) {
+                throw new Error(`Ключ "${slotId}" не найден`);
+            }
+
+            const bytes = await decryptBinaryAESGCM(parsed.encryptedPayload, keyHex);
+            renderDecryptedMedia(box, parsed.metadata || {}, bytes);
+        } catch (err) {
+            resetMediaInterface(box);
+            if (error) {
+                error.textContent = `ошибка: ${err.message}`;
+            }
+            if (manual) {
+                showToast(`❌ Не удалось расшифровать вложение: ${err.message}`);
+            }
+        } finally {
+            if (decryptBtn && box.dataset.vkP2PDecoded !== 'true') {
+                decryptBtn.disabled = false;
+            }
+        }
+    }
+
+    function decorateIncomingMediaLinks() {
+        getEncryptedMediaLinks().forEach(link => {
+            const box = ensureMediaInterface(link);
+
+            if (!settings.autoDecrypt) {
+                if (!box.dataset.vkP2PDecoded) {
+                    const btn = box.querySelector('.vk-p2p-media-btn');
+                    if (btn) btn.textContent = '🔓 Расшифровать media';
+                }
+                return;
+            }
+
+            if (box.dataset.vkP2PAutoTried === 'true') return;
+            box.dataset.vkP2PAutoTried = 'true';
+            decryptIncomingMediaLink(link, { manual: false });
+        });
+    }
+
     function restoreIncomingMessage(msgEl) {
         const originalEnc = msgEl.dataset.vkdecOriginal;
         if (!originalEnc) return;
@@ -1716,6 +2165,84 @@
         }));
 
         inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function isComposerFileInput(inputEl) {
+        if (!inputEl || inputEl.type !== 'file') return false;
+        if (!getComposerInput()) return false;
+
+        const accept = String(inputEl.accept || '').toLowerCase();
+        return (
+            accept.includes('image') ||
+            accept.includes('audio') ||
+            accept.includes('video') ||
+            accept.includes('*/*') ||
+            accept === ''
+        );
+    }
+
+    async function handleMediaFileInputChange(event) {
+        const inputEl = event.target;
+
+        if (!(inputEl instanceof HTMLInputElement) || inputEl.type !== 'file') return;
+        if (inputEl.dataset.vkP2PMediaSynthetic === 'true') {
+            delete inputEl.dataset.vkP2PMediaSynthetic;
+            return;
+        }
+        if (!settings.encryptMediaUploads) return;
+        if (!isComposerFileInput(inputEl)) return;
+
+        const files = Array.from(inputEl.files || []);
+        if (!files.length) return;
+
+        const hasMedia = files.some(file => isEncryptableMediaFile(file));
+        if (!hasMedia) return;
+
+        if (!hasAnyKeys()) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation?.();
+            inputEl.value = '';
+            showSeedSetupModal();
+            return;
+        }
+
+        const keyHex = getCurrentKeyHex();
+        if (!keyHex) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation?.();
+            showToast(`❌ Ключ "${currentKeySlot}" не найден`);
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+
+        try {
+            const outputFiles = [];
+
+            for (const file of files) {
+                if (isEncryptableMediaFile(file)) {
+                    outputFiles.push(await buildEncryptedMediaFile(file, keyHex, currentKeySlot));
+                } else {
+                    outputFiles.push(file);
+                }
+            }
+
+            const dataTransfer = new DataTransfer();
+            outputFiles.forEach(file => dataTransfer.items.add(file));
+            inputEl.files = dataTransfer.files;
+            inputEl.dataset.vkP2PMediaSynthetic = 'true';
+            inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const mediaCount = outputFiles.filter(file => isEncryptedMediaName(file.name)).length;
+            showToast(`✅ Зашифровал media до upload: ${mediaCount}`);
+        } catch (err) {
+            inputEl.value = '';
+            showToast(`❌ Не удалось зашифровать media: ${err.message}`);
+        }
     }
 
     async function encryptCurrentInput({ showErrors = true } = {}) {
@@ -2172,6 +2699,13 @@
             showToast(settings.autoEncrypt ? '✅ Автошифрование включено' : '⏸️ Автошифрование выключено');
         });
 
+        addMenuItem(menu, settings.encryptMediaUploads ? '🎞️ Media до upload: включено' : '🎞️ Media до upload: выключено', () => {
+            settings.encryptMediaUploads = !settings.encryptMediaUploads;
+            saveSettings();
+            closeMenus();
+            showToast(settings.encryptMediaUploads ? '✅ Media-шифрование до upload включено' : '⏸️ Media-шифрование до upload выключено');
+        });
+
         addMenuSelect(
             menu,
             'Кодирование шифротекста',
@@ -2195,6 +2729,7 @@
             closeMenus();
             if (!settings.autoDecrypt) {
                 restoreAllIncomingMessages();
+                restoreAllIncomingMedia();
             }
             showToast(settings.autoDecrypt ? '✅ Авто-расшифровка включена' : '⏸️ Авто-расшифровка выключена');
             scan();
@@ -2364,6 +2899,7 @@
         injectStyles();
 
         getIncomingMessageElements().forEach(el => processIncomingMessage(el));
+        decorateIncomingMediaLinks();
 
         addEncryptButton();
     }
@@ -2404,6 +2940,10 @@
             childList: true,
             subtree: true
         });
+
+        document.addEventListener('change', (e) => {
+            handleMediaFileInputChange(e);
+        }, true);
 
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
