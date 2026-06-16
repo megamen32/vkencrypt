@@ -898,16 +898,18 @@
                 justify-content: center;
                 gap: 2px;
                 margin-right: 2px;
+                align-self: flex-end;
+                min-width: 36px;
+                min-height: 36px;
                 vertical-align: middle;
-                transform: translateY(-1px);
             }
 
             .vk-p2p-icon-btn {
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                width: 28px;
-                height: 28px;
+                width: 36px;
+                height: 36px;
                 background: transparent;
                 border: none;
                 cursor: pointer;
@@ -920,17 +922,28 @@
                 vertical-align: middle;
             }
 
+            .vk-p2p-icon-glyph {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 100%;
+                height: 100%;
+                line-height: 1;
+                transform: translateY(-1px);
+                pointer-events: none;
+            }
+
             .vk-p2p-icon-btn:hover {
                 opacity: 1;
                 background: rgba(127, 127, 127, 0.10);
             }
 
             .vk-p2p-icon-btn-main {
-                font-size: 17px;
+                font-size: 18px;
             }
 
             .vk-p2p-icon-btn-small {
-                font-size: 17px;
+                font-size: 18px;
             }
 
             .vk-p2p-menu {
@@ -2570,6 +2583,19 @@
     // Composer controls
     // ============================================================
 
+    function setIconButtonGlyph(button, glyph) {
+        if (!button) return;
+
+        let glyphEl = button.querySelector('.vk-p2p-icon-glyph');
+        if (!glyphEl) {
+            glyphEl = document.createElement('span');
+            glyphEl.className = 'vk-p2p-icon-glyph';
+            button.replaceChildren(glyphEl);
+        }
+
+        glyphEl.textContent = glyph;
+    }
+
     function updateEncryptButtonsTitle() {
         const encBtn = document.getElementById('vk-p2p-enc-btn');
         const keyBtn = document.getElementById('vk-p2p-key-btn');
@@ -2580,7 +2606,7 @@
                 ? `Зашифровать сообщение. Ключ: ${currentKeySlot}`
                 : 'Настроить ключи VKEncrypt';
 
-            encBtn.textContent = hasKeys ? '🔒' : '🔐';
+            setIconButtonGlyph(encBtn, hasKeys ? '🔒' : '🔐');
             encBtn.style.opacity = hasKeys ? '0.58' : '0.35';
             encBtn.style.display = settings.autoEncrypt && hasKeys ? 'none' : '';
         }
@@ -2590,13 +2616,13 @@
                 ? `Настройки VKEncrypt. Сейчас: ${currentKeySlot}`
                 : 'Настроить VKEncrypt';
 
-            keyBtn.textContent = !hasKeys
+            setIconButtonGlyph(keyBtn, !hasKeys
                 ? '⚙️'
                 : currentKeySlot === '@temp'
                     ? '⚡'
                     : settings.autoEncrypt
                         ? '🟢'
-                        : '🔑';
+                        : '🔑');
         }
     }
 
@@ -2629,7 +2655,7 @@
         encBtn.id = 'vk-p2p-enc-btn';
         encBtn.className = 'vk-p2p-icon-btn vk-p2p-icon-btn-main';
         encBtn.type = 'button';
-        encBtn.textContent = '🔒';
+        setIconButtonGlyph(encBtn, '🔒');
 
         const keyBtn = document.createElement('button');
         keyBtn.id = 'vk-p2p-key-btn';
@@ -2653,7 +2679,7 @@
                 if (ok) showToast('✅ Сообщение зашифровано');
             } finally {
                 encBtn.disabled = false;
-                encBtn.textContent = '🔒';
+                setIconButtonGlyph(encBtn, '🔒');
                 updateEncryptButtonsTitle();
             }
         });
