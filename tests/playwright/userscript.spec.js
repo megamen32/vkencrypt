@@ -781,8 +781,8 @@ test('incoming media: Safari cross-origin auto decrypt не уходит в бе
         `,
     });
 
-    await expect(page.locator('.vk-p2p-media-error')).toContainText('Safari Userscripts не дал GM_xmlhttpRequest');
-    await expect(page.locator('.vk-p2p-media-btn')).toBeVisible();
+    await expect(page.locator('.vk-p2p-media-meta')).toContainText('не даёт расшифровать вложения');
+    await expect(page.locator('.vk-p2p-media-btn')).toBeHidden();
 
     const state = await page.locator('.vk-p2p-media-box').evaluate(el => ({
         autoTried: el.dataset.vkP2PAutoTried || null,
@@ -799,7 +799,7 @@ test('incoming media: Safari cross-origin auto decrypt не уходит в бе
     });
 
     await page.waitForTimeout(50);
-    await expect(page.locator('.vk-p2p-media-error')).toContainText('Safari Userscripts не дал GM_xmlhttpRequest');
+    await expect(page.locator('.vk-p2p-media-meta')).toContainText('не даёт расшифровать вложения');
     await expect(page.locator('.vk-p2p-media-box')).toHaveCount(1);
 });
 

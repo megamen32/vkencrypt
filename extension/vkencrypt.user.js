@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK P2P AES-GCM
 // @namespace    local
-// @version      5.1.2
+// @version      5.1.3
 // @description  P2P шифрование VK: seed-фраза, сохранение ключей, пользовательские ключи, автошифрование, emoji-шифротекст
 // @author       VKEncrypt
 // @match        https://vk.com/*
@@ -33,7 +33,7 @@
     'use strict';
 
     // ============================================================
-    // VK P2P AES-GCM v5.1.2
+    // VK P2P AES-GCM v5.1.3
     //
     // Что умеет:
     // - НЕ показывает модалку сразу после установки.
@@ -50,7 +50,7 @@
     // ============================================================
 
     const APP_NAME = 'VK P2P AES-GCM';
-    const APP_VERSION = '5.1.2';
+    const APP_VERSION = '5.1.3';
 
     const FORMAT_START = '𓁗';
     const FORMAT_MID = 'Ⰴ';
@@ -141,6 +141,87 @@
     let mediaPreviewObserver = null;
     const MEDIA_DECRYPT_CACHE = new Map();
     const STORAGE_FALLBACK_PREFIX = 'vk-p2p-fallback:';
+    const RUNTIME_PLATFORM = detectRuntimePlatform();
+
+    // ============================================================
+    // Platform
+    // ============================================================
+
+    function detectRuntimePlatform() {
+        const ua = navigator.userAgent || '';
+        const vendor = navigator.vendor || '';
+        const host = location.hostname.toLowerCase();
+        const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const isAndroid = /Android/.test(ua);
+        const isSafari = /Safari\//.test(ua) &&
+            !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS/.test(ua) &&
+            /Apple/i.test(vendor || ua);
+        const hasGMStorage = typeof GM_getValue === 'function' &&
+            typeof GM_setValue === 'function' &&
+            typeof GM_deleteValue === 'function';
+        const hasGMNetwork = typeof GM_xmlhttpRequest === 'function';
+        const siteFamily = host.endsWith('.vk.me') ? 'vk.me' : 'vk';
+
+        return {
+            ua,
+            host,
+            siteFamily,
+            isIOS,
+            isAndroid,
+            isSafari,
+            hasGMStorage,
+            hasGMNetwork,
+        };
+    }
+
+    function getPlatformDisplayName() {
+        if (RUNTIME_PLATFORM.isSafari && RUNTIME_PLATFORM.isIOS) return 'Safari на iPhone/iPad';
+        if (RUNTIME_PLATFORM.isSafari) return 'Safari';
+        if (RUNTIME_PLATFORM.isAndroid) return 'Android';
+        if (RUNTIME_PLATFORM.siteFamily === 'vk.me') return 'VK Me';
+        return 'эта платформа';
+    }
+
+    function getCrossOriginMediaBlockReason(url) {
+        if (!/^https?:/i.test(url || '')) return '';
+        if (String(url).startsWith(location.origin)) return '';
+        if (RUNTIME_PLATFORM.hasGMNetwork) return '';
+
+        if (RUNTIME_PLATFORM.isSafari) {
+            return `${getPlatformDisplayName()} не даёт расшифровать вложения на этом сайте`;
+        }
+
+        return 'Эта платформа не даёт расшифровать вложения на этом сайте';
+    }
+
+    function applyMediaPlatformBlock(box, reason) {
+        if (!box) return;
+
+        const meta = box.querySelector('.vk-p2p-media-meta');
+        const error = box.querySelector('.vk-p2p-media-error');
+        const decryptBtn = box.querySelector('.vk-p2p-media-btn');
+        const downloadLink = box.querySelector('.vk-p2p-media-download');
+
+        if (meta) {
+            meta.textContent = reason;
+        }
+        if (error) {
+            error.textContent = '';
+        }
+        if (downloadLink) {
+            downloadLink.hidden = true;
+            downloadLink.removeAttribute('href');
+            downloadLink.removeAttribute('download');
+        }
+        if (decryptBtn) {
+            decryptBtn.hidden = true;
+            decryptBtn.disabled = false;
+            decryptBtn.title = reason;
+            decryptBtn.textContent = '🔓 Расшифровать вложение';
+        }
+
+        box.dataset.vkP2PPlatformBlocked = 'true';
+    }
 
     // ============================================================
     // Storage
@@ -1810,7 +1891,7 @@
         const decryptBtn = document.createElement('button');
         decryptBtn.type = 'button';
         decryptBtn.className = 'vk-p2p-media-btn';
-        decryptBtn.textContent = '🔓 Расшифровать media';
+        decryptBtn.textContent = '🔓 Расшифровать вложение';
 
         const downloadLink = document.createElement('a');
         downloadLink.className = 'vk-p2p-media-download';
@@ -1895,6 +1976,7 @@
         const error = box.querySelector('.vk-p2p-media-error');
         const downloadLink = box.querySelector('.vk-p2p-media-download');
         const decryptBtn = box.querySelector('.vk-p2p-media-btn');
+        const meta = box.querySelector('.vk-p2p-media-meta');
 
         if (preview?.dataset.vkP2PObjectUrl) {
             delete preview.dataset.vkP2PObjectUrl;
@@ -1910,12 +1992,17 @@
         if (decryptBtn) {
             decryptBtn.disabled = false;
             decryptBtn.hidden = false;
-            decryptBtn.textContent = '🔓 Расшифровать media';
+            decryptBtn.textContent = '🔓 Расшифровать вложение';
+            decryptBtn.removeAttribute('title');
+        }
+        if (meta) {
+            meta.textContent = 'Зашифрованное вложение VKEncrypt';
         }
 
         restoreMediaLink(link);
 
         delete box.dataset.vkP2PDecoded;
+        delete box.dataset.vkP2PPlatformBlocked;
         if (!preserveAutoTried) {
             delete box.dataset.vkP2PAutoTried;
         }
@@ -1949,8 +2036,9 @@
             });
         }
 
-        if (/^https?:/i.test(url) && !url.startsWith(location.origin)) {
-            throw new Error('Safari Userscripts не дал GM_xmlhttpRequest для cross-origin media');
+        const platformBlockReason = getCrossOriginMediaBlockReason(url);
+        if (platformBlockReason) {
+            throw new Error(platformBlockReason);
         }
 
         const response = await fetch(url, {
@@ -2042,6 +2130,16 @@
         }
         if (error) error.textContent = '';
 
+        const platformBlockReason = getCrossOriginMediaBlockReason(link.href);
+        if (platformBlockReason) {
+            resetMediaInterface(box, { preserveAutoTried: !manual });
+            applyMediaPlatformBlock(box, platformBlockReason);
+            if (manual) {
+                showToast(`⚠️ ${platformBlockReason}`);
+            }
+            return;
+        }
+
         try {
             const cached = getCachedDecryptedMedia(link);
             if (cached) {
@@ -2092,7 +2190,7 @@
                     const btn = box.querySelector('.vk-p2p-media-btn');
                     if (btn) {
                         btn.hidden = false;
-                        btn.textContent = '🔓 Расшифровать media';
+                        btn.textContent = '🔓 Расшифровать вложение';
                     }
                 }
                 return;
@@ -2501,10 +2599,10 @@
             inputEl.dispatchEvent(new Event('change', { bubbles: true }));
 
             const mediaCount = outputFiles.filter(file => isEncryptedMediaName(file.name)).length;
-            showToast(`✅ Зашифровал media до upload: ${mediaCount}`);
+            showToast(`✅ Зашифровал вложения до отправки: ${mediaCount}`);
         } catch (err) {
             inputEl.value = '';
-            showToast(`❌ Не удалось зашифровать media: ${err.message}`);
+            showToast(`❌ Не удалось зашифровать вложения: ${err.message}`);
         }
     }
 
@@ -2981,11 +3079,11 @@
             showToast(settings.autoEncrypt ? '✅ Автошифрование включено' : '⏸️ Автошифрование выключено');
         });
 
-        addMenuItem(menu, settings.encryptMediaUploads ? '🎞️ Media до upload: включено' : '🎞️ Media до upload: выключено', () => {
+        addMenuItem(menu, settings.encryptMediaUploads ? '🎞️ Шифровать вложения: включено' : '🎞️ Шифровать вложения: выключено', () => {
             settings.encryptMediaUploads = !settings.encryptMediaUploads;
             saveSettings();
             closeMenus();
-            showToast(settings.encryptMediaUploads ? '✅ Media-шифрование до upload включено' : '⏸️ Media-шифрование до upload выключено');
+            showToast(settings.encryptMediaUploads ? '✅ Шифрование вложений включено' : '⏸️ Шифрование вложений выключено');
         });
 
         addMenuSelect(
