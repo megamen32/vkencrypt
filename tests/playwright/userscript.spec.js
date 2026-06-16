@@ -390,6 +390,8 @@ test('incoming media: .vke attachment auto-decrypts image and exposes download',
     await expect(page.locator('.vk-p2p-media-preview img')).toBeVisible();
     await expect(page.locator('.vk-p2p-media-download')).toHaveAttribute('download', 'cat.png');
     await expect(page.locator('.vk-p2p-media-meta')).toContainText('cat.png');
+    await expect(page.locator('#vk-media-link')).toHaveText('cat.png');
+    await expect(page.locator('#vk-media-link')).toHaveAttribute('download', 'cat.png');
 });
 
 test('incoming media: выключение авторасшифровки убирает preview обратно', async ({ page }) => {
@@ -435,6 +437,7 @@ test('incoming media: выключение авторасшифровки уби
 
     await expect(page.locator('.vk-p2p-media-preview img')).toHaveCount(0);
     await expect(page.locator('.vk-p2p-media-download')).toBeHidden();
+    await expect(page.locator('.ConvoMessage__text a').first()).toHaveText('toggle.png.vke');
 });
 
 test('incoming media: .vke attachment auto-decrypts audio and exposes controls', async ({ page }) => {
@@ -472,6 +475,61 @@ test('incoming media: .vke attachment auto-decrypts audio and exposes controls',
 
     await expect(page.locator('.vk-p2p-media-preview audio')).toBeVisible();
     await expect(page.locator('.vk-p2p-media-download')).toHaveAttribute('download', 'voice.ogg');
+});
+
+test('incoming media: повторная расшифровка использует cache без повторного fetch', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для media cache');
+    const pngBytes = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jk2QAAAAASUVORK5CYII=',
+        'base64'
+    );
+    const container = buildEncryptedMediaContainer({
+        keyHex: derived.k1,
+        mime: 'image/png',
+        originalName: 'cache.png',
+        body: pngBytes,
+    });
+    const dataUrl = `data:application/octet-stream;base64,${container.toString('base64')}`;
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoDecrypt: false, encryptMediaUploads: true })),
+        },
+        body: `
+            <div class="ConvoMessage__text">
+                <a href="${dataUrl}">cache.png.vke</a>
+            </div>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await page.evaluate(() => {
+        const originalFetch = window.fetch.bind(window);
+        window.__mediaFetchCount = 0;
+        window.fetch = async (...args) => {
+            const url = String(args[0]);
+            if (url.startsWith('data:application/octet-stream')) {
+                window.__mediaFetchCount += 1;
+            }
+            return originalFetch(...args);
+        };
+    });
+
+    await page.locator('.vk-p2p-media-btn').click();
+    await expect(page.locator('.vk-p2p-media-preview img')).toBeVisible();
+    await page.locator('.vk-p2p-media-btn').click();
+
+    await expect.poll(async () => page.evaluate(() => window.__mediaFetchCount)).toBe(1);
 });
 
 test('emoji incoming: emj.-шифротекст расшифровывается без atob error', async ({ page }) => {

@@ -127,6 +127,8 @@
     let skipNextAutoEncrypt = false;
     let lastEncryptedAt = 0;
     let scanTimer = null;
+    let mediaPreviewObserver = null;
+    const MEDIA_DECRYPT_CACHE = new Map();
 
     // ============================================================
     // Storage
@@ -886,21 +888,28 @@
             .vk-p2p-controls {
                 display: inline-flex;
                 align-items: center;
+                justify-content: center;
                 gap: 2px;
                 margin-right: 2px;
                 vertical-align: middle;
             }
 
             .vk-p2p-icon-btn {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 28px;
+                height: 28px;
                 background: transparent;
                 border: none;
                 cursor: pointer;
                 color: inherit;
                 opacity: 0.58;
-                padding: 7px 5px;
+                padding: 0;
                 border-radius: 8px;
                 line-height: 1;
                 transition: opacity 0.15s, background 0.15s;
+                vertical-align: middle;
             }
 
             .vk-p2p-icon-btn:hover {
@@ -909,11 +918,11 @@
             }
 
             .vk-p2p-icon-btn-main {
-                font-size: 18px;
+                font-size: 17px;
             }
 
             .vk-p2p-icon-btn-small {
-                font-size: 15px;
+                font-size: 17px;
             }
 
             .vk-p2p-menu {
@@ -1666,6 +1675,11 @@
             if (existing) return existing;
         }
 
+        if (!link.dataset.vkP2POriginalHref) {
+            link.dataset.vkP2POriginalHref = link.getAttribute('href') || '';
+            link.dataset.vkP2POriginalText = (link.textContent || '').trim();
+        }
+
         const box = document.createElement('div');
         box.className = 'vk-p2p-media-box';
         box.dataset.vkdecSkip = 'true';
@@ -1711,8 +1725,44 @@
         return box;
     }
 
+    function restoreMediaLink(link) {
+        if (!link) return;
+
+        const originalHref = link.dataset.vkP2POriginalHref;
+        const originalText = link.dataset.vkP2POriginalText;
+
+        if (typeof originalHref === 'string') {
+            link.setAttribute('href', originalHref);
+        }
+
+        if (typeof originalText === 'string') {
+            link.textContent = originalText;
+        }
+
+        link.removeAttribute('download');
+    }
+
+    function getMediaCacheKey(link) {
+        return link?.dataset?.vkP2POriginalHref || link?.getAttribute('href') || '';
+    }
+
+    function getCachedDecryptedMedia(link) {
+        const key = getMediaCacheKey(link);
+        return key ? MEDIA_DECRYPT_CACHE.get(key) || null : null;
+    }
+
+    function setCachedDecryptedMedia(link, value) {
+        const key = getMediaCacheKey(link);
+        if (!key) return;
+        MEDIA_DECRYPT_CACHE.set(key, value);
+    }
+
     function resetMediaInterface(box) {
         if (!box) return;
+
+        const link = box.previousElementSibling?.matches?.('a[href]')
+            ? box.previousElementSibling
+            : null;
 
         const preview = box.querySelector('.vk-p2p-media-preview');
         const error = box.querySelector('.vk-p2p-media-error');
@@ -1720,7 +1770,6 @@
         const decryptBtn = box.querySelector('.vk-p2p-media-btn');
 
         if (preview?.dataset.vkP2PObjectUrl) {
-            URL.revokeObjectURL(preview.dataset.vkP2PObjectUrl);
             delete preview.dataset.vkP2PObjectUrl;
         }
 
@@ -1735,6 +1784,8 @@
             decryptBtn.disabled = false;
             decryptBtn.textContent = '🔓 Расшифровать media';
         }
+
+        restoreMediaLink(link);
 
         delete box.dataset.vkP2PDecoded;
         delete box.dataset.vkP2PAutoTried;
@@ -1756,7 +1807,10 @@
         return new Uint8Array(await response.arrayBuffer());
     }
 
-    function renderDecryptedMedia(box, metadata, bytes) {
+    function renderDecryptedMedia(box, metadata, bytes, cachedObjectUrl = '') {
+        const link = box.previousElementSibling?.matches?.('a[href]')
+            ? box.previousElementSibling
+            : null;
         const preview = box.querySelector('.vk-p2p-media-preview');
         const meta = box.querySelector('.vk-p2p-media-meta');
         const downloadLink = box.querySelector('.vk-p2p-media-download');
@@ -1764,7 +1818,7 @@
         const blob = new Blob([bytes], {
             type: metadata.mime || 'application/octet-stream'
         });
-        const objectUrl = URL.createObjectURL(blob);
+        const objectUrl = cachedObjectUrl || URL.createObjectURL(blob);
 
         if (preview?.dataset.vkP2PObjectUrl) {
             URL.revokeObjectURL(preview.dataset.vkP2PObjectUrl);
@@ -1800,6 +1854,12 @@
             downloadLink.hidden = false;
         }
 
+        if (link) {
+            link.href = objectUrl;
+            link.download = metadata.originalName || 'media.bin';
+            link.textContent = metadata.originalName || 'media.bin';
+        }
+
         if (decryptBtn) {
             decryptBtn.textContent = '↻ Расшифровать заново';
             decryptBtn.disabled = false;
@@ -1825,17 +1885,31 @@
         if (error) error.textContent = '';
 
         try {
-            const containerBytes = await fetchEncryptedMediaBytes(link);
-            const parsed = parseEncryptedMediaContainer(containerBytes);
-            const slotId = parsed.metadata?.keyId || currentKeySlot;
-            const keyHex = getAllKeys()[slotId];
+            const cached = getCachedDecryptedMedia(link);
+            if (cached) {
+                renderDecryptedMedia(box, cached.metadata || {}, cached.bytes, cached.objectUrl || '');
+            } else {
+                const containerBytes = await fetchEncryptedMediaBytes(link);
+                const parsed = parseEncryptedMediaContainer(containerBytes);
+                const slotId = parsed.metadata?.keyId || currentKeySlot;
+                const keyHex = getAllKeys()[slotId];
 
-            if (!keyHex) {
-                throw new Error(`Ключ "${slotId}" не найден`);
+                if (!keyHex) {
+                    throw new Error(`Ключ "${slotId}" не найден`);
+                }
+
+                const bytes = await decryptBinaryAESGCM(parsed.encryptedPayload, keyHex);
+                const objectUrl = URL.createObjectURL(new Blob([bytes], {
+                    type: parsed.metadata?.mime || 'application/octet-stream'
+                }));
+
+                setCachedDecryptedMedia(link, {
+                    metadata: parsed.metadata || {},
+                    bytes,
+                    objectUrl
+                });
+                renderDecryptedMedia(box, parsed.metadata || {}, bytes, objectUrl);
             }
-
-            const bytes = await decryptBinaryAESGCM(parsed.encryptedPayload, keyHex);
-            renderDecryptedMedia(box, parsed.metadata || {}, bytes);
         } catch (err) {
             resetMediaInterface(box);
             if (error) {
@@ -1864,9 +1938,37 @@
             }
 
             if (box.dataset.vkP2PAutoTried === 'true') return;
-            box.dataset.vkP2PAutoTried = 'true';
-            decryptIncomingMediaLink(link, { manual: false });
+            observeMediaPreview(link, box);
         });
+    }
+
+    function observeMediaPreview(link, box) {
+        if (!mediaPreviewObserver) {
+            mediaPreviewObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (!entry.isIntersecting) return;
+
+                    const targetBox = entry.target;
+                    mediaPreviewObserver.unobserve(targetBox);
+
+                    if (targetBox.dataset.vkP2PAutoTried === 'true') return;
+                    targetBox.dataset.vkP2PAutoTried = 'true';
+
+                    const targetLink = targetBox.previousElementSibling?.matches?.('a[href]')
+                        ? targetBox.previousElementSibling
+                        : null;
+                    if (!targetLink) return;
+
+                    decryptIncomingMediaLink(targetLink, { manual: false });
+                });
+            }, {
+                root: null,
+                rootMargin: '120px 0px',
+                threshold: 0.01
+            });
+        }
+
+        mediaPreviewObserver.observe(box);
     }
 
     function restoreIncomingMessage(msgEl) {
