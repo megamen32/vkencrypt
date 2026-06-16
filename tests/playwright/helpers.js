@@ -125,10 +125,10 @@ const MODERN_WEB_VK_BODY = `
 // стабы GM_*, форсит sync setTimeout, инжектит userscript через
 // page.evaluate (после полной загрузки страницы, когда document.body
 // уже существует и MutationObserver привязывается корректно).
-async function openMockChat(page, { body = MOCK_BODY, css = MOCK_CSS, gmSeed = null, url = 'about:blank' } = {}) {
+async function openMockChat(page, { body = MOCK_BODY, css = MOCK_CSS, gmSeed = null, url = 'about:blank', disableGMXmlhttpRequest = false } = {}) {
     await page.goto(url);
     await page.evaluate(
-        ({ body, css, gmStubs, syncStub, seedScript, code }) => {
+        ({ body, css, gmStubs, syncStub, seedScript, code, disableGMXmlhttpRequest }) => {
             const style = document.createElement('style');
             style.textContent = css;
             document.head.appendChild(style);
@@ -137,6 +137,10 @@ async function openMockChat(page, { body = MOCK_BODY, css = MOCK_CSS, gmSeed = n
 
             // Стабы GM_*.
             (new Function(gmStubs))();
+
+            if (disableGMXmlhttpRequest) {
+                window.GM_xmlhttpRequest = undefined;
+            }
 
             if (seedScript) {
                 (new Function(seedScript))();
@@ -156,6 +160,7 @@ async function openMockChat(page, { body = MOCK_BODY, css = MOCK_CSS, gmSeed = n
             syncStub: SYNC_STUB,
             seedScript: buildSeedStoreScript(gmSeed),
             code: loadUserscriptCode(),
+            disableGMXmlhttpRequest,
         }
     );
     await page.waitForSelector('#vk-p2p-enc-btn', { state: 'attached', timeout: 5000 });

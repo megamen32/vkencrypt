@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK P2P AES-GCM
 // @namespace    local
-// @version      5.1.1
+// @version      5.1.2
 // @description  P2P шифрование VK: seed-фраза, сохранение ключей, пользовательские ключи, автошифрование, emoji-шифротекст
 // @author       VKEncrypt
 // @match        https://vk.com/*
@@ -33,7 +33,7 @@
     'use strict';
 
     // ============================================================
-    // VK P2P AES-GCM v5.1.1
+    // VK P2P AES-GCM v5.1.2
     //
     // Что умеет:
     // - НЕ показывает модалку сразу после установки.
@@ -50,7 +50,7 @@
     // ============================================================
 
     const APP_NAME = 'VK P2P AES-GCM';
-    const APP_VERSION = '5.1.1';
+    const APP_VERSION = '5.1.2';
 
     const FORMAT_START = '𓁗';
     const FORMAT_MID = 'Ⰴ';
@@ -1883,8 +1883,9 @@
         MEDIA_DECRYPT_CACHE.set(key, value);
     }
 
-    function resetMediaInterface(box) {
+    function resetMediaInterface(box, options = {}) {
         if (!box) return;
+        const { preserveAutoTried = false } = options;
 
         const link = box.previousElementSibling?.matches?.('a[href]')
             ? box.previousElementSibling
@@ -1915,7 +1916,9 @@
         restoreMediaLink(link);
 
         delete box.dataset.vkP2PDecoded;
-        delete box.dataset.vkP2PAutoTried;
+        if (!preserveAutoTried) {
+            delete box.dataset.vkP2PAutoTried;
+        }
     }
 
     function restoreAllIncomingMedia() {
@@ -2066,7 +2069,7 @@
                 renderDecryptedMedia(box, parsed.metadata || {}, bytes, objectUrl);
             }
         } catch (err) {
-            resetMediaInterface(box);
+            resetMediaInterface(box, { preserveAutoTried: !manual });
             if (error) {
                 error.textContent = `ошибка: ${err.message}`;
             }

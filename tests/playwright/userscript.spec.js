@@ -744,6 +744,65 @@ test('incoming media: повторная расшифровка использу
     await expect.poll(async () => page.evaluate(() => window.__mediaFetchCount)).toBe(1);
 });
 
+test('incoming media: Safari cross-origin auto decrypt не уходит в бесконечный цикл ошибок', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для safari media');
+
+    await openMockChat(page, {
+        url: 'https://web.vk.me/convo/1',
+        disableGMXmlhttpRequest: true,
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoDecrypt: true, encryptMediaUploads: true })),
+        },
+        body: `
+            <article class="ConvoMessage">
+                <div class="Attachments ConvoMessage__attachments ConvoMessage__attachments--withoutMarginTop">
+                    <a id="vk-safari-media-link" class="AttachDoc" href="https://psv4.userapi.com/s/v1/d2/test/post_1_png.vke" target="_blank" rel="noopener noreferrer">
+                        <div class="AttachmentCell AttachmentCell--clickable">
+                            <div class="AttachmentCell__infoBlockContainer">
+                                <div class="AttachmentCell__infoBlock">
+                                    <h4 class="AttachmentCell__headline">post_1_png.vke</h4>
+                                    <span class="AttachmentCell__footnote">VKE ᐧ 1.6 MB</span>
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                </div>
+            </article>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-p2p-media-error')).toContainText('Safari Userscripts не дал GM_xmlhttpRequest');
+    await expect(page.locator('.vk-p2p-media-btn')).toBeVisible();
+
+    const state = await page.locator('.vk-p2p-media-box').evaluate(el => ({
+        autoTried: el.dataset.vkP2PAutoTried || null,
+        decoded: el.dataset.vkP2PDecoded || null,
+    }));
+
+    expect(state.autoTried).toBe('true');
+    expect(state.decoded).toBeNull();
+
+    await page.evaluate(() => {
+        const marker = document.createElement('div');
+        marker.textContent = 'mutation';
+        document.body.appendChild(marker);
+    });
+
+    await page.waitForTimeout(50);
+    await expect(page.locator('.vk-p2p-media-error')).toContainText('Safari Userscripts не дал GM_xmlhttpRequest');
+    await expect(page.locator('.vk-p2p-media-box')).toHaveCount(1);
+});
+
 test('emoji incoming: emj.-шифротекст расшифровывается без atob error', async ({ page }) => {
     const seed = 'очень длинная секретная фраза для emoji теста';
     const derived = deriveDerivedKeys(seed);
