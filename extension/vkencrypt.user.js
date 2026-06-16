@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK P2P AES-GCM
 // @namespace    local
-// @version      5.1.0
+// @version      5.1.1
 // @description  P2P шифрование VK: seed-фраза, сохранение ключей, пользовательские ключи, автошифрование, emoji-шифротекст
 // @author       VKEncrypt
 // @match        https://vk.com/*
@@ -33,7 +33,7 @@
     'use strict';
 
     // ============================================================
-    // VK P2P AES-GCM v5.1.0
+    // VK P2P AES-GCM v5.1.1
     //
     // Что умеет:
     // - НЕ показывает модалку сразу после установки.
@@ -50,7 +50,7 @@
     // ============================================================
 
     const APP_NAME = 'VK P2P AES-GCM';
-    const APP_VERSION = '5.1.0';
+    const APP_VERSION = '5.1.1';
 
     const FORMAT_START = '𓁗';
     const FORMAT_MID = 'Ⰴ';
@@ -140,6 +140,7 @@
     let scanTimer = null;
     let mediaPreviewObserver = null;
     const MEDIA_DECRYPT_CACHE = new Map();
+    const STORAGE_FALLBACK_PREFIX = 'vk-p2p-fallback:';
 
     // ============================================================
     // Storage
@@ -154,12 +155,62 @@
         }
     }
 
+    function canUseLocalStorage() {
+        try {
+            const probeKey = `${STORAGE_FALLBACK_PREFIX}probe`;
+            localStorage.setItem(probeKey, '1');
+            localStorage.removeItem(probeKey);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function gmGetValueCompat(key, fallback) {
+        if (typeof GM_getValue === 'function') {
+            return GM_getValue(key, fallback);
+        }
+
+        if (!canUseLocalStorage()) {
+            return fallback;
+        }
+
+        const value = localStorage.getItem(`${STORAGE_FALLBACK_PREFIX}${key}`);
+        return value === null ? fallback : value;
+    }
+
+    function gmSetValueCompat(key, value) {
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(key, value);
+            return;
+        }
+
+        if (!canUseLocalStorage()) {
+            return;
+        }
+
+        localStorage.setItem(`${STORAGE_FALLBACK_PREFIX}${key}`, value);
+    }
+
+    function gmDeleteValueCompat(key) {
+        if (typeof GM_deleteValue === 'function') {
+            GM_deleteValue(key);
+            return;
+        }
+
+        if (!canUseLocalStorage()) {
+            return;
+        }
+
+        localStorage.removeItem(`${STORAGE_FALLBACK_PREFIX}${key}`);
+    }
+
     function gmGetJson(key, fallback) {
-        return safeJsonParse(GM_getValue(key, null), fallback);
+        return safeJsonParse(gmGetValueCompat(key, null), fallback);
     }
 
     function gmSetJson(key, value) {
-        GM_setValue(key, JSON.stringify(value));
+        gmSetValueCompat(key, JSON.stringify(value));
     }
 
     function loadSettings() {
@@ -243,7 +294,7 @@
     }
 
     function clearDerivedKeys() {
-        GM_deleteValue(STORAGE_KEYS.DERIVED_KEYS);
+        gmDeleteValueCompat(STORAGE_KEYS.DERIVED_KEYS);
         DERIVED_KEYS = null;
     }
 
@@ -263,7 +314,7 @@
 
     function resetAllKeys() {
         clearDerivedKeys();
-        GM_deleteValue(STORAGE_KEYS.CUSTOM_KEYS);
+        gmDeleteValueCompat(STORAGE_KEYS.CUSTOM_KEYS);
         CUSTOM_KEYS = {};
         TEMP_KEY = null;
         currentKeySlot = DEFAULT_KEY_SLOT;
@@ -1893,6 +1944,10 @@
                     }
                 });
             });
+        }
+
+        if (/^https?:/i.test(url) && !url.startsWith(location.origin)) {
+            throw new Error('Safari Userscripts не дал GM_xmlhttpRequest для cross-origin media');
         }
 
         const response = await fetch(url, {
