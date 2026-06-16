@@ -20,6 +20,8 @@
 // @connect      m.vk.ru
 // @connect      *.vk.com
 // @connect      *.vk.ru
+// @connect      userapi.com
+// @connect      *.userapi.com
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js
 // @downloadURL  https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js
@@ -1853,6 +1855,7 @@
         }
         if (decryptBtn) {
             decryptBtn.disabled = false;
+            decryptBtn.hidden = false;
             decryptBtn.textContent = '🔓 Расшифровать media';
         }
 
@@ -1956,8 +1959,8 @@
         }
 
         if (decryptBtn) {
-            decryptBtn.textContent = '↻ Расшифровать заново';
             decryptBtn.disabled = false;
+            decryptBtn.hidden = true;
         }
 
         box.dataset.vkP2PDecoded = 'true';
@@ -2027,7 +2030,10 @@
             if (!settings.autoDecrypt) {
                 if (!box.dataset.vkP2PDecoded) {
                     const btn = box.querySelector('.vk-p2p-media-btn');
-                    if (btn) btn.textContent = '🔓 Расшифровать media';
+                    if (btn) {
+                        btn.hidden = false;
+                        btn.textContent = '🔓 Расшифровать media';
+                    }
                 }
                 return;
             }

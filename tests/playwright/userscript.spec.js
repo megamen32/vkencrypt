@@ -553,6 +553,9 @@ test('incoming media: повторная расшифровка использу
             <div class="ConvoMessage__text">
                 <a href="${dataUrl}">cache.png.vke</a>
             </div>
+            <div class="ConvoMessage__text">
+                <a href="${dataUrl}">cache-copy.png.vke</a>
+            </div>
             <div class="ConvoComposer__inputPanel">
                 <div class="ComposerInput">
                     <span contenteditable="true"
@@ -577,9 +580,10 @@ test('incoming media: повторная расшифровка использу
         };
     });
 
-    await page.locator('.vk-p2p-media-btn').click();
-    await expect(page.locator('.vk-p2p-media-preview img')).toBeVisible();
-    await page.locator('.vk-p2p-media-btn').click();
+    await page.locator('.vk-p2p-media-btn').first().click();
+    await expect(page.locator('.vk-p2p-media-preview img').first()).toBeVisible();
+    await page.locator('.vk-p2p-media-btn').nth(1).click();
+    await expect(page.locator('.vk-p2p-media-preview img').nth(1)).toBeVisible();
 
     await expect.poll(async () => page.evaluate(() => window.__mediaFetchCount)).toBe(1);
 });
