@@ -2607,7 +2607,9 @@
     function updateEncryptButtonsTitle() {
         const encBtn = document.getElementById('vk-p2p-enc-btn');
         const keyBtn = document.getElementById('vk-p2p-key-btn');
+        const encWrapper = document.getElementById('vk-p2p-enc-controls');
         const hasKeys = hasAnyKeys();
+        const shouldHideEncryptButton = settings.autoEncrypt && hasKeys;
 
         if (encBtn) {
             encBtn.title = hasKeys
@@ -2616,7 +2618,11 @@
 
             setIconButtonGlyph(encBtn, hasKeys ? '🔒' : '🔐');
             encBtn.style.opacity = hasKeys ? '0.58' : '0.35';
-            encBtn.style.display = settings.autoEncrypt && hasKeys ? 'none' : '';
+            encBtn.style.display = shouldHideEncryptButton ? 'none' : '';
+        }
+
+        if (encWrapper) {
+            encWrapper.style.display = shouldHideEncryptButton ? 'none' : '';
         }
 
         if (keyBtn) {

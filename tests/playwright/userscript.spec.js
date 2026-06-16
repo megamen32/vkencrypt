@@ -239,6 +239,64 @@ test('composer controls: настройки после загрузки файл
     await expect(page.locator('.DropdownReforged__trigger #vk-p2p-enc-controls')).toHaveCount(0);
 });
 
+test('composer controls: при autoEncrypt скрывается весь wrapper замка без пустого места', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для скрытия замка');
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoEncrypt: true })),
+        },
+        body: `
+            <div class="ConvoComposer__inputPanel">
+                <div class="DropdownReforged ConvoComposer__clip DropdownReforged--closed">
+                    <div class="DropdownReforged__trigger">
+                        <button class="ConvoComposer__button" aria-label="Загрузить файл">+</button>
+                    </div>
+                </div>
+                <div role="presentation" class="ComposerInput ConvoComposer__inputWrapper">
+                    <div role="presentation">
+                        <span contenteditable="true"
+                              class="ComposerInput__input ConvoComposer__input ComposerInput__input--fixed"
+                              role="textbox"
+                              aria-multiline="true"
+                              aria-label="Сообщение">1</span>
+                    </div>
+                </div>
+                <button class="ConvoComposer__button" aria-label="Выбрать эмодзи">☺</button>
+                <div class="DropdownReforged DropdownReforged--closed">
+                    <div class="DropdownReforged__trigger">
+                        <button class="ConvoComposer__button ConvoComposer__sendButton--submit" aria-label="Отправить сообщение">→</button>
+                    </div>
+                </div>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('#vk-p2p-enc-controls')).toBeHidden();
+
+    const order = await page.locator('.ConvoComposer__inputPanel').evaluate(panel => {
+        return Array.from(panel.children)
+            .filter(el => getComputedStyle(el).display !== 'none')
+            .map(el => ({
+                id: el.id || '',
+                hasInput: !!el.querySelector?.('[contenteditable="true"]'),
+                hasEmojiButton: el.matches?.('[aria-label*="эмодзи"]') || !!el.querySelector?.('[aria-label*="эмодзи"]'),
+            }));
+    });
+
+    const keyIndex = order.findIndex(item => item.id === 'vk-p2p-key-controls');
+    const inputIndex = order.findIndex(item => item.hasInput);
+    const emojiIndex = order.findIndex(item => item.hasEmojiButton);
+    const encIndex = order.findIndex(item => item.id === 'vk-p2p-enc-controls');
+
+    expect(encIndex).toBe(-1);
+    expect(keyIndex).toBeGreaterThanOrEqual(0);
+    expect(keyIndex).toBeLessThan(inputIndex);
+    expect(keyIndex).toBeLessThan(emojiIndex);
+});
+
 test('share instruction: пункт меню вставляет plaintext-инструкцию без шифрования', async ({ page }) => {
     const derived = deriveDerivedKeys('seed для инструкции');
     let sentText = '';
