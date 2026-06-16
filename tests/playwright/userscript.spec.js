@@ -297,7 +297,7 @@ test('media upload: image/audio/video подменяются на encrypted .vke
         body: `
             <div class="ConvoComposer__inputPanel">
                 <button class="ConvoComposer__button" aria-label="Загрузить файл">+</button>
-                <input id="vk-media-input" type="file" accept="image/*,audio/*,video/*">
+                <input id="vk-media-input" type="file" accept="image/*,audio/*,video/*" multiple>
                 <div class="ComposerInput">
                     <span contenteditable="true"
                           class="ComposerInput__input ConvoComposer__input"
@@ -312,29 +312,43 @@ test('media upload: image/audio/video подменяются на encrypted .vke
 
     await page.locator('#vk-media-input').evaluate(input => {
         input.addEventListener('change', async () => {
-            const file = input.files[0];
-            window.__mediaUploadInfo = {
+            window.__mediaUploadInfo = await Promise.all(Array.from(input.files).map(async file => ({
                 name: file.name,
                 type: file.type,
                 size: file.size,
                 prefix: Array.from(new Uint8Array(await file.slice(0, 5).arrayBuffer())),
-            };
+            })));
         });
     });
 
-    await page.locator('#vk-media-input').setInputFiles({
-        name: 'photo.png',
-        mimeType: 'image/png',
-        buffer: Buffer.from('not-a-real-png'),
-    });
+    await page.locator('#vk-media-input').setInputFiles([
+        {
+            name: 'photo.png',
+            mimeType: 'image/png',
+            buffer: Buffer.from('not-a-real-png'),
+        },
+        {
+            name: 'voice.ogg',
+            mimeType: 'audio/ogg',
+            buffer: Buffer.from('not-a-real-ogg'),
+        },
+        {
+            name: 'movie.mp4',
+            mimeType: 'video/mp4',
+            buffer: Buffer.from('not-a-real-mp4'),
+        },
+    ]);
 
     await expect.poll(async () => page.evaluate(() => window.__mediaUploadInfo || null)).toMatchObject({
-        name: 'photo.png.vke',
-        type: 'application/octet-stream',
+        0: { name: 'photo.png.vke', type: 'application/octet-stream' },
+        1: { name: 'voice.ogg.vke', type: 'application/octet-stream' },
+        2: { name: 'movie.mp4.vke', type: 'application/octet-stream' },
     });
 
     const info = await page.evaluate(() => window.__mediaUploadInfo);
-    expect(info.prefix).toEqual(Array.from(Buffer.from(MEDIA_CONTAINER_MAGIC, 'utf8')));
+    info.forEach(item => {
+        expect(item.prefix).toEqual(Array.from(Buffer.from(MEDIA_CONTAINER_MAGIC, 'utf8')));
+    });
 });
 
 test('incoming media: .vke attachment auto-decrypts image and exposes download', async ({ page }) => {
@@ -421,6 +435,43 @@ test('incoming media: выключение авторасшифровки уби
 
     await expect(page.locator('.vk-p2p-media-preview img')).toHaveCount(0);
     await expect(page.locator('.vk-p2p-media-download')).toBeHidden();
+});
+
+test('incoming media: .vke attachment auto-decrypts audio and exposes controls', async ({ page }) => {
+    const derived = deriveDerivedKeys('seed для incoming audio');
+    const audioBytes = Buffer.from('OggSfake-audio', 'utf8');
+    const container = buildEncryptedMediaContainer({
+        keyHex: derived.k1,
+        mime: 'audio/ogg',
+        originalName: 'voice.ogg',
+        body: audioBytes,
+    });
+    const dataUrl = `data:application/octet-stream;base64,${container.toString('base64')}`;
+
+    await openMockChat(page, {
+        url: 'https://example.com',
+        gmSeed: {
+            vk_p2p_derived_keys_v1: JSON.stringify(derived),
+            vk_p2p_settings_v1: JSON.stringify(makeBaseSettings({ autoDecrypt: true, encryptMediaUploads: true })),
+        },
+        body: `
+            <div class="ConvoMessage__text">
+                <a href="${dataUrl}">voice.ogg.vke</a>
+            </div>
+            <div class="ConvoComposer__inputPanel">
+                <div class="ComposerInput">
+                    <span contenteditable="true"
+                          class="ComposerInput__input ConvoComposer__input"
+                          role="textbox"
+                          aria-multiline="true"></span>
+                </div>
+                <button class="ConvoComposer__button ConvoComposer__sendButton--mic" aria-label="Отправить">→</button>
+            </div>
+        `,
+    });
+
+    await expect(page.locator('.vk-p2p-media-preview audio')).toBeVisible();
+    await expect(page.locator('.vk-p2p-media-download')).toHaveAttribute('download', 'voice.ogg');
 });
 
 test('emoji incoming: emj.-шифротекст расшифровывается без atob error', async ({ page }) => {
