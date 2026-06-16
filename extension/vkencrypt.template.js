@@ -83,6 +83,15 @@
         cyrillic: { shortCode: CODEC_MARKERS.cyrillic, label: 'Русский алфавит' }
     };
 
+    const README_URL = 'https://github.com/megamen32/vkencrypt#readme';
+    const INSTALL_URL = 'https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js';
+    const CYBERCHEF_URL = 'https://gchq.github.io/CyberChef/';
+    const ONE_TIME_NOTE_SERVICES = [
+        'PrivateBin: https://privatebin.net/',
+        'Onetime Secret: https://onetimesecret.com/',
+        'Password Pusher: https://pwpush.com/'
+    ];
+
     const IV_LEN = 12;
     const TAG_LEN = 16;
 
@@ -111,6 +120,7 @@
     };
 
     let isAutoSending = false;
+    let skipNextAutoEncrypt = false;
     let lastEncryptedAt = 0;
     let scanTimer = null;
 
@@ -1592,6 +1602,71 @@
         return null;
     }
 
+    function findComposerButton(panel, labels) {
+        const root = panel || document;
+
+        for (const label of labels) {
+            const selector = [
+                `button[aria-label*="${label}"]`,
+                `[role="button"][aria-label*="${label}"]`,
+                `[aria-label*="${label}"]`
+            ].join(',');
+
+            const found = root.querySelector(selector);
+            if (!found) continue;
+
+            const button = found.closest('button, [role="button"], a, div') || found;
+            const rect = button.getBoundingClientRect();
+
+            if (rect.width > 0 && rect.height > 0) {
+                return button;
+            }
+        }
+
+        return null;
+    }
+
+    function findUploadButton(panel) {
+        return findComposerButton(panel, [
+            'Загрузить файл',
+            'Прикрепить',
+            'прикрепить',
+            'файл'
+        ]);
+    }
+
+    function findEmojiButton(panel) {
+        return findComposerButton(panel, [
+            'эмодзи',
+            'Эмодзи',
+            'стикер',
+            'Стикер'
+        ]);
+    }
+
+    function getDirectChildWithin(parent, child) {
+        if (!parent || !child || !parent.contains(child)) return null;
+
+        let node = child;
+        while (node.parentElement && node.parentElement !== parent) {
+            node = node.parentElement;
+        }
+
+        return node.parentElement === parent ? node : null;
+    }
+
+    function insertAfterReference(node, reference) {
+        if (!node || !reference?.parentNode) return false;
+        reference.parentNode.insertBefore(node, reference.nextSibling);
+        return true;
+    }
+
+    function insertBeforeReference(node, reference) {
+        if (!node || !reference?.parentNode) return false;
+        reference.parentNode.insertBefore(node, reference);
+        return true;
+    }
+
     function getComposerInsertReference(panel, inputEl) {
         if (!panel || !inputEl) return null;
 
@@ -1689,6 +1764,7 @@
     }
 
     async function autoEncryptAndSend(event) {
+        if (skipNextAutoEncrypt) return;
         if (!settings.autoEncrypt) return;
         if (isAutoSending) return;
 
@@ -1743,6 +1819,7 @@
     }
 
     function handleComposerKeydown(e) {
+        if (skipNextAutoEncrypt) return;
         if (!settings.autoEncrypt) return;
         if (e.key !== 'Enter') return;
 
@@ -1765,6 +1842,7 @@
         sendBtn.dataset.vkP2PSendAttached = 'true';
 
         sendBtn.addEventListener('click', (e) => {
+            if (skipNextAutoEncrypt) return;
             if (!settings.autoEncrypt) return;
             if (isAutoSending) return;
 
@@ -1823,14 +1901,18 @@
         const sendBtn = findSendButton(panel);
         if (sendBtn) attachSendButtonHandler(sendBtn);
 
-        if (document.getElementById('vk-p2p-enc-controls')) {
+        if (document.getElementById('vk-p2p-enc-controls') && document.getElementById('vk-p2p-key-controls')) {
             updateEncryptButtonsTitle();
             return;
         }
 
-        const wrapper = document.createElement('span');
-        wrapper.id = 'vk-p2p-enc-controls';
-        wrapper.className = 'vk-p2p-controls';
+        const keyWrapper = document.createElement('span');
+        keyWrapper.id = 'vk-p2p-key-controls';
+        keyWrapper.className = 'vk-p2p-controls';
+
+        const encWrapper = document.createElement('span');
+        encWrapper.id = 'vk-p2p-enc-controls';
+        encWrapper.className = 'vk-p2p-controls';
 
         const encBtn = document.createElement('button');
         encBtn.id = 'vk-p2p-enc-btn';
@@ -1877,23 +1959,156 @@
             showMainMenu(keyBtn);
         });
 
-        wrapper.appendChild(keyBtn);
-        wrapper.appendChild(encBtn);
+        keyWrapper.appendChild(keyBtn);
+        encWrapper.appendChild(encBtn);
 
+        const uploadBtn = findUploadButton(panel);
+        const emojiBtn = findEmojiButton(panel);
+        const uploadReference = getDirectChildWithin(panel, uploadBtn) || uploadBtn;
+        const emojiReference = getDirectChildWithin(panel, emojiBtn) || emojiBtn;
         const sendContainer = sendBtn?.closest('.DropdownReforged');
+        const sendReference = getDirectChildWithin(panel, sendContainer || sendBtn) || sendContainer || sendBtn;
         const insertReference = getComposerInsertReference(panel, inputEl);
 
-        if (sendContainer?.parentNode && panel.contains(sendContainer)) {
-            sendContainer.parentNode.insertBefore(wrapper, sendContainer);
-        } else if (sendBtn?.parentNode && panel.contains(sendBtn)) {
-            sendBtn.parentNode.insertBefore(wrapper, sendBtn);
+        if (uploadReference && panel.contains(uploadReference)) {
+            insertAfterReference(keyWrapper, uploadReference);
         } else if (insertReference?.parentNode) {
-            insertReference.parentNode.insertBefore(wrapper, insertReference.nextSibling);
+            insertReference.parentNode.insertBefore(keyWrapper, insertReference);
         } else {
-            panel.appendChild(wrapper);
+            panel.insertBefore(keyWrapper, panel.firstChild);
+        }
+
+        if (emojiReference && panel.contains(emojiReference)) {
+            insertBeforeReference(encWrapper, emojiReference);
+        } else if (sendReference && panel.contains(sendReference)) {
+            insertBeforeReference(encWrapper, sendReference);
+        } else if (insertReference?.parentNode) {
+            insertAfterReference(encWrapper, insertReference);
+        } else {
+            panel.appendChild(encWrapper);
         }
 
         updateEncryptButtonsTitle();
+    }
+
+    function buildShareInstructionText(options = {}) {
+        const includeInstallUrl = options.includeInstallUrl !== false;
+        const includeCyberChef = options.includeCyberChef !== false;
+        const includeNoteServices = options.includeNoteServices !== false;
+        const lines = [
+            'Я шифрую сообщения через VKEncrypt, чтобы переписка не лежала открытым текстом в VK/MAX/OK и обычных чатах.',
+            'Чтобы читать мои сообщения, установи VKEncrypt и введи такой же секретный ключ/seed.'
+        ];
+
+        if (includeInstallUrl) {
+            lines.push(`Инструкция установки: ${README_URL}`);
+            lines.push(`Быстрая ссылка на userscript: ${INSTALL_URL}`);
+        }
+
+        if (includeCyberChef) {
+            lines.push(`Запасной ручной инструмент для проверки кодировок: CyberChef ${CYBERCHEF_URL}`);
+        }
+
+        lines.push('Ключ я отправлю отдельно через защищённый канал связи.');
+        lines.push('И мне, и тебе нельзя отправлять ключ в VK, MAX, OK, обычном Telegram-чате, email, SMS или обычной почтой.');
+
+        if (includeNoteServices) {
+            lines.push(`Для одноразовой передачи ключа можно использовать: ${ONE_TIME_NOTE_SERVICES.join(' ; ')}`);
+        }
+
+        return lines.join('\n');
+    }
+
+    function sendPlainTextMessage(text, { sendNow = false } = {}) {
+        const inputEl = getComposerInput();
+
+        if (!inputEl) {
+            showToast('❌ Не нашёл поле ввода');
+            return false;
+        }
+
+        setInputPlainText(inputEl, text);
+
+        if (!sendNow) {
+            showToast('✅ Инструкция вставлена в поле ввода');
+            return true;
+        }
+
+        const panel = getComposerPanel(inputEl);
+        const sendBtn = findSendButton(panel);
+
+        if (!sendBtn) {
+            showToast('⚠️ Инструкция вставлена, но кнопку отправки не нашёл');
+            return false;
+        }
+
+        skipNextAutoEncrypt = true;
+        try {
+            sendBtn.click();
+            showToast('✅ Инструкция отправлена без шифрования');
+            return true;
+        } finally {
+            setTimeout(() => {
+                skipNextAutoEncrypt = false;
+            }, 500);
+        }
+    }
+
+    function showShareInstructionModal() {
+        const { overlay, modal } = createModal({
+            title: '📨 Скинуть инструкцию',
+            bodyHtml: `
+                <p>
+                    Сообщение будет отправлено открытым текстом, чтобы собеседник смог установить VKEncrypt.
+                    Ключ в это сообщение не добавляется.
+                </p>
+
+                <label class="vk-p2p-check">
+                    <input id="vk-p2p-share-install-url" type="checkbox" checked>
+                    <span>Добавить ссылку установки VKEncrypt</span>
+                </label>
+
+                <label class="vk-p2p-check">
+                    <input id="vk-p2p-share-cyberchef" type="checkbox" checked>
+                    <span>Добавить CyberChef как запасной ручной инструмент</span>
+                </label>
+
+                <label class="vk-p2p-check">
+                    <input id="vk-p2p-share-note-services" type="checkbox" checked>
+                    <span>Добавить сервисы для одноразовой передачи ключа</span>
+                </label>
+
+                <p class="vk-p2p-note">
+                    Автосоздание одноразовой заметки пока выключено: публичные сервисы отличаются API/CORS.
+                    Ключ лучше отправлять отдельно и только после проверки сервиса.
+                </p>
+            `,
+            actionsHtml: `
+                <button class="vk-p2p-btn vk-p2p-btn-secondary" id="vk-p2p-share-cancel">Отмена</button>
+                <button class="vk-p2p-btn vk-p2p-btn-secondary" id="vk-p2p-share-insert">Вставить</button>
+                <button class="vk-p2p-btn vk-p2p-btn-primary" id="vk-p2p-share-send">Вставить и отправить</button>
+            `
+        });
+
+        function getText() {
+            return buildShareInstructionText({
+                includeInstallUrl: modal.querySelector('#vk-p2p-share-install-url').checked,
+                includeCyberChef: modal.querySelector('#vk-p2p-share-cyberchef').checked,
+                includeNoteServices: modal.querySelector('#vk-p2p-share-note-services').checked
+            });
+        }
+
+        modal.querySelector('#vk-p2p-share-cancel').addEventListener('click', () => overlay.remove());
+        modal.querySelector('#vk-p2p-share-insert').addEventListener('click', () => {
+            const text = getText();
+            overlay.remove();
+            sendPlainTextMessage(text, { sendNow: false });
+        });
+        modal.querySelector('#vk-p2p-share-send').addEventListener('click', () => {
+            const text = getText();
+            overlay.remove();
+            sendPlainTextMessage(text, { sendNow: true });
+        });
     }
 
     function showMainMenu(anchorBtn) {
@@ -2000,6 +2215,11 @@
         addMenuItem(menu, '🔄 Сменить seed-фразу k1–k4', () => {
             closeMenus();
             showSeedChangeModal();
+        });
+
+        addMenuItem(menu, '📨 Скинуть инструкцию по установке', () => {
+            closeMenus();
+            showShareInstructionModal();
         });
 
         if (TEMP_KEY) {

@@ -142,7 +142,8 @@ async function openMockChat(page, { body = MOCK_BODY, css = MOCK_CSS, gmSeed = n
             code: loadUserscriptCode(),
         }
     );
-    await page.waitForSelector('#vk-p2p-enc-btn', { timeout: 5000 });
+    await page.waitForSelector('#vk-p2p-enc-btn', { state: 'attached', timeout: 5000 });
+    await page.waitForSelector('#vk-p2p-key-btn', { state: 'attached', timeout: 5000 });
 }
 
 async function openModernWebVkChat(page) {
