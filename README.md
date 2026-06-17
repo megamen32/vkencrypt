@@ -16,7 +16,7 @@
 
 1. Установите бесплатное приложение [Userscripts](https://apps.apple.com/app/userscripts/id1463296397) из App Store.
 2. Откройте **Настройки iOS → Safari → Расширения → Userscripts** и включите расширение. 
-3. Откройте в safari: **[Установить VKEncrypt](https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js)**. Нажмите слева от адрессной строки на меню, в меню нажмите "Userscripts", в Userscripts наверху нажмите "Tap to install".  <img src="docs/media/install_ios.webp" width="280" alt="Установка расширения">
+3. Откройте в safari: **[Установить VKEncrypt](https://raw.githubusercontent.com/megamen32/vkencrypt/master/extension/vkencrypt.user.js)**. Нажмите слева от адрессной строки на меню, в меню нажмите "Userscripts", в Userscripts наверху нажмите "Tap to install".  <img src="docs/media/install_ios.gif" width="280" alt="Установка расширения">
 4. Откройте `vk.com`, `vk.ru` или `web.vk.me` в Safari и зайдите в любой чат.
 
 ### Android — Firefox Browser
